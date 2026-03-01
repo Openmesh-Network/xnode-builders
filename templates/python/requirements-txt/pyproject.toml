@@ -1,0 +1,10 @@
+[project]
+name = "requirements-txt"
+version = "1.0.0"
+
+[project.scripts]
+requirements-txt = "requirements_txt:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

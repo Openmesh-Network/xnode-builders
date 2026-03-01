@@ -1,0 +1,23 @@
+version = 1
+revision = 3
+requires-python = ">=3.13"
+
+[[package]]
+name = "print-color"
+version = "0.4.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/eb/32/601fd9002509b32d1f9d3ec1e8cc5af9af619def83327adbb1ea18e1502a/print_color-0.4.6.tar.gz", hash = "sha256:d3aafc1666c8d31a85fffa6ee8e4f269f5d5e338d685b4e6179915c71867c585", size = 7009, upload-time = "2023-04-24T17:43:23.988Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/b8/1e2340eb96e8620217e26644192d35ad8300a4bd346dff1d5a02eb7d737d/print_color-0.4.6-py3-none-any.whl", hash = "sha256:494bd1cdb84daf481f0e63bd22b3c32f7d52827d8f5d9138a96bb01ca8ba9299", size = 7678, upload-time = "2023-04-24T17:43:21.636Z" },
+]
+
+[[package]]
+name = "uv"
+version = "1.0.0"
+source = { editable = "." }
+dependencies = [
+    { name = "print-color" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "print-color", specifier = ">=0.4.6" }]
