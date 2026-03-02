@@ -255,6 +255,243 @@
           );
         };
 
+      javascriptApp =
+        {
+          system,
+          pkgs,
+          app,
+        }:
+        let
+          name = app.name;
+          version = app.version;
+          getArgs = app.getArgs or ({ pkgs }: { });
+          args = getArgs { inherit pkgs; };
+          src = app.src or args.src;
+          type =
+            app.type or (
+              if builtins.pathExists (src + "/package-lock.json") then
+                "npm"
+              else if builtins.pathExists (src + "/yarn.lock") then
+                "yarm"
+              else if builtins.pathExists (src + "/pnpm-lock.yaml") then
+                "pnpm"
+              else if builtins.pathExists (src + "/bun.lock") then
+                "bun"
+              else
+                ""
+            );
+          implementation = app.implementation or "buildNpmPackage";
+          framework =
+            app.framework or (
+              if
+                builtins.pathExists (src + "/next.config.js")
+                || builtins.pathExists (src + "/next.config.ts")
+                || builtins.pathExists (src + "/next.config.mjs")
+                || builtins.pathExists (src + "/next.config.cjs")
+              then
+                "nextjs"
+              else if
+                builtins.pathExists (src + "/vite.config.js")
+                || builtins.pathExists (src + "/vite.config.ts")
+                || builtins.pathExists (src + "/vite.config.mjs")
+                || builtins.pathExists (src + "/vite.config.cjs")
+              then
+                "vite"
+              else if
+                builtins.pathExists (src + "/astro.config.js")
+                || builtins.pathExists (src + "/astro.config.ts")
+                || builtins.pathExists (src + "/astro.config.mjs")
+                || builtins.pathExists (src + "/astro.config.cjs")
+              then
+                "astro"
+              else
+                ""
+            );
+          # extraCheckArgs = args.extraCheckArgs or args.extraArgs or { };
+          extraPackageArgs = args.extraPackageArgs or args.extraArgs or { };
+          extraDevShellArgs = args.extraDevShellArgs or args.extraArgs or { };
+        in
+        (
+          if implementation == "buildNpmPackage" then
+            let
+              pname = name;
+            in
+            {
+              # TODO check
+
+              package = pkgs.buildNpmPackage (
+                {
+                  inherit pname version src;
+                }
+                // (
+                  if type == "npm" then
+                    {
+                      npmDeps = pkgs.importNpmLock {
+                        inherit pname version;
+                        npmRoot = src;
+                      };
+                      npmConfigHook = pkgs.importNpmLock.npmConfigHook;
+                    }
+                  else
+                    { }
+                )
+                // (
+                  let
+                    node =
+                      if type == "npm" then
+                        pkgs.lib.getExe pkgs.nodejs
+                      else if type == "yarn" then
+                        pkgs.lib.getExe pkgs.yarn
+                      else if type == "pnpm" then
+                        pkgs.lib.getExe pkgs.pnpm
+                      else if type == "bun" then
+                        pkgs.lib.getExe pkgs.bun
+                      else
+                        "";
+                    npm =
+                      if type == "npm" then
+                        "${pkgs.nodejs}/bin/npm"
+                      else if type == "yarn" then
+                        pkgs.lib.getExe pkgs.yarn
+                      else if type == "pnpm" then
+                        pkgs.lib.getExe pkgs.pnpm
+                      else if type == "bun" then
+                        pkgs.lib.getExe pkgs.bun
+                      else
+                        "";
+
+                    installArgs =
+                      (
+                        if framework == "nextjs" then
+                          {
+                            copy = [
+                              ".next"
+                              "public"
+                              "node_modules"
+                              "package.json"
+                            ];
+                            execute = args: "cd ${args.dir} && ${args.npm} run start";
+                            commands = ''
+                              # https://github.com/vercel/next.js/discussions/58864
+                              ln -s /var/cache/${name} $out/share/.next/cache
+                            '';
+                          }
+                        else if framework == "vite" || framework == "astro" then
+                          {
+                            copy = [ "dist" ];
+                            execute = args: "${pkgs.lib.getExe pkgs.static-web-server} --port 3000 --root ${args.dir}/dist";
+                          }
+                        else if framework == "react" then
+                          {
+                            copy = [ "build" ];
+                            execute = args: "${pkgs.lib.getExe pkgs.static-web-server} --port 3000 --root ${args.dir}/build";
+                          }
+                        else if framework == "nextjs-standalone" then
+                          {
+                            copy = [
+                              ".next"
+                              "public"
+                            ];
+                            execute = args: "${args.node} ${args.dir}/server.js";
+                            commands = ''
+                              # https://github.com/vercel/next.js/discussions/58864
+                              ln -s /var/cache/${name} $out/share/.next/cache
+                              mv $out/share/.next/standalone/* $out/share
+                            '';
+                          }
+                        else if framework == "astro-node" then
+                          {
+                            copy = [
+                              "dist"
+                              "node_modules"
+                            ];
+                            execute = args: "${args.node} ${args.dir}/dist/server/entry.mjs";
+                          }
+                        else if framework == "astro-node-noext" then
+                          {
+                            copy = [ "dist" ];
+                            execute = args: "${args.node} ${args.dir}/dist/server/entry.mjs";
+                          }
+                        else
+                          { }
+                      )
+                      // (args.frameworkArgs or { });
+                  in
+                  {
+                    installPhase = ''
+                      runHook preInstall
+
+                      mkdir -p $out/{share,bin}
+                      ${builtins.concatStringsSep "\n" (
+                        builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
+                      )}
+                      cat > $out/bin/${name} << EOF
+                      #!/usr/bin/env bash
+                      ${(installArgs.execute or (args: "")) {
+                        inherit node npm;
+                        dir = "$out/share";
+                      }}
+                      EOF
+                      patchShebangs $out/bin/${name}
+                      chmod +x $out/bin/${name}
+                      ${installArgs.commands or ""}
+                      ${installArgs.extraCommands or ""}
+
+                      runHook postInstall
+                    '';
+                  }
+                )
+                // extraPackageArgs
+              );
+            }
+          else
+            builtins.throw "Unknown implementation ${implementation}"
+        )
+        // {
+          devShell = pkgs.mkShell (
+            {
+              buildInputs =
+                (defaultDevShellBuildInputs { inherit pkgs; })
+                ++ [
+                  pkgs.python
+
+                  (pkgs.vscode-with-extensions.override {
+                    vscode = pkgs.vscode;
+                    vscodeExtensions =
+                      (defaultVsCodeExtensions { inherit pkgs; })
+                      ++ [
+                        pkgs.vscode-extensions.ms-python.python
+                      ]
+                      ++ (
+                        if framework == "vite" then
+                          [ pkgs.vscode-extensions.vue.volar ]
+                        else if framework == "astro" || framework == "astro-node" then
+                          [ pkgs.vscode-extensions.astro-build.astro-vscode ]
+                        else
+                          [ ]
+                      );
+                  })
+                ]
+                ++ (
+                  if type == "npm" then
+                    [ pkgs.nodejs ]
+                  else if type == "yarn" then
+                    [ pkgs.yarn ]
+                  else if type == "pnpm" then
+                    [ pkgs.pnpm ]
+                  else if type == "bun" then
+                    [ pkgs.bun ]
+                  else
+                    [ ]
+                );
+              shellHook = ''
+                code .
+              '';
+            }
+            // extraDevShellArgs
+          );
+        };
+
       pythonApp =
         {
           system,
@@ -401,6 +638,27 @@
               )
               // app;
           };
+          javascript = outputBuilder {
+            appBuilder = javascriptApp;
+            appProcess =
+              app:
+              (
+                if app ? src then
+                  let
+                    metadata = builtins.fromJSON (builtins.readFile (app.src + "/package.json"));
+                  in
+                  {
+                    name = metadata.name;
+                    version = metadata.version;
+                  }
+                else
+                  {
+                    name = "javascript-app";
+                    version = "1.0.0";
+                  }
+              )
+              // app;
+          };
           python = outputBuilder {
             appBuilder = pythonApp;
             appProcess =
@@ -424,12 +682,14 @@
           };
         in
         {
-          inherit rust python;
+          inherit rust javascript python;
 
           auto =
             app:
             if builtins.pathExists (app.src + "/Cargo.toml") then
               rust app
+            else if builtins.pathExists (app.src + "/package.json") then
+              javascript app
             else if builtins.pathExists (app.src + "/pyproject.toml") then
               python app
             else
@@ -443,8 +703,20 @@
         uv = {
           path = ./templates/python/uv;
         };
-        poetry = {
-          path = ./templates/python/poetry;
+        nodejs = {
+          path = ./templates/javascript/nodejs;
+        };
+        nextjs = {
+          path = ./templates/javascript/nextjs;
+        };
+        vite = {
+          path = ./templates/javascript/vite;
+        };
+        astro = {
+          path = ./templates/javascript/astro;
+        };
+        react = {
+          path = ./templates/javascript/react;
         };
       };
     };

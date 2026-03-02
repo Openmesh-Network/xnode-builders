@@ -10,6 +10,11 @@ Pick a template:
 `nix flake init -t github:Openmesh-Network/xnode-builders#rust`  
 `nix flake init -t github:Openmesh-Network/xnode-builders#poetry`  
 `nix flake init -t github:Openmesh-Network/xnode-builders#uv`
+`nix flake init -t github:Openmesh-Network/xnode-builders#nodejs`
+`nix flake init -t github:Openmesh-Network/xnode-builders#nextjs`
+`nix flake init -t github:Openmesh-Network/xnode-builders#vite`
+`nix flake init -t github:Openmesh-Network/xnode-builders#astro`
+`nix flake init -t github:Openmesh-Network/xnode-builders#react`
 
 ### Existing Project
 
@@ -29,41 +34,8 @@ Create a file called flake.nix at the root of your project repository with the f
 }
 ```
 
-In most cases, that's all you have to do! You can now use the power of nix to run your app on any platform.
-
-## Manual Definition
-
-### Rust
-
-```nix
-{
-  inputs = {
-    xnode-builders.url = "github:Openmesh-Network/xnode-builders";
-  };
-
-  outputs =
-    inputs:
-    inputs.xnode-builders.language.rust {
-      src = ./.;
-    };
-}
-```
-
-### Python
-
-```nix
-{
-  inputs = {
-    xnode-builders.url = "github:Openmesh-Network/xnode-builders";
-  };
-
-  outputs =
-    inputs:
-    inputs.xnode-builders.language.python {
-      src = ./.;
-    };
-}
-```
+In most cases, that's all you have to do! You can now use the power of nix to run your app on any platform.  
+In case you are experiencing issues, check the flake.nix of the template that is most identical to your project (in terms of tech stack) if any additional configuration is required.
 
 ## XnodeOS Application Flake
 
