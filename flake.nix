@@ -520,9 +520,11 @@
                   "loadPoetryPyproject"
                 else
                   "loadPyproject";
-              extraRequirements = app.extraRequirements or [ ];
+              extraRequirements = args.extraRequirements or [ ];
               python = pkgs.python3;
+              pyproject = pkgs.lib.importTOML (src + (args.pyproject or "/pyproject.toml"));
               baseProject = inputs.pyproject-nix.lib.project.${loader} ({
+                inherit pyproject;
                 projectRoot = src;
               });
               finalDependencies =

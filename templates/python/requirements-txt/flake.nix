@@ -7,6 +7,10 @@
     inputs:
     inputs.xnode-builders.language.auto {
       src = ./.;
-      extraRequirements = [ "requirements.txt" ];
+      getArgs =
+        { pkgs, ... }:
+        {
+          extraRequirements = [ "requirements.txt" ];
+        };
     };
 }
