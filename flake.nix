@@ -521,7 +521,7 @@
                 else
                   "loadPyproject";
               extraRequirements = args.extraRequirements or [ ];
-              python = pkgs.python3;
+              python = args.python or pkgs.python3;
               pyproject = pkgs.lib.importTOML (src + (args.pyproject or "/pyproject.toml"));
               baseProject = inputs.pyproject-nix.lib.project.${loader} ({
                 inherit pyproject;
@@ -559,16 +559,17 @@
               overlay = workspace.mkPyprojectOverlay {
                 sourcePreference = "wheel";
               };
-              python = pkgs.python3;
+              python = args.python or pkgs.python3;
               pythonSet =
                 (pkgs.callPackage inputs.pyproject-nix.build.packages {
                   inherit python;
                 }).overrideScope
                   (
-                    pkgs.lib.composeManyExtensions [
+                    pkgs.lib.composeManyExtensions ([
                       inputs.pyproject-build-systems.overlays.wheel
                       overlay
-                    ]
+                      (extraPackageArgs.override or (final: prev: { }))
+                    ])
                   );
               venv = pythonSet.mkVirtualEnv "${name}-${version}-venv" workspace.deps.default;
             in
