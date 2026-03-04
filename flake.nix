@@ -531,7 +531,24 @@
                 (builtins.map (
                   requirement:
                   (inputs.pyproject-nix.lib.project.loadRequirementsTxt {
-                    requirements = builtins.readFile (src + "/${requirement}");
+                    requirements =
+                      let
+                        path = src + "/${requirement}";
+                        parentFolder = builtins.dirOf path;
+                        rawContent = builtins.readFile path;
+                        perLine = pkgs.lib.splitString "\n" rawContent;
+                        patchedLines = builtins.map (
+                          line:
+                          let
+                            readFile = pkgs.lib.splitString "-r " line;
+                          in
+                          if line != "" && builtins.elemAt readFile 0 == "" then
+                            builtins.readFile "${parentFolder}/${builtins.elemAt readFile 1}"
+                          else
+                            line
+                        ) perLine;
+                      in
+                      builtins.concatStringsSep "\n" patchedLines;
                   }).dependencies.dependencies
                 ) extraRequirements)
                 ++ [ baseProject.dependencies.dependencies ];

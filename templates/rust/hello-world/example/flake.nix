@@ -4,7 +4,7 @@
     hello-world.url = "github:Openmesh-Network/xnode-builders?dir=templates/rust/hello-world";
     nixpkgs.follows = "hello-world/xnode-builders/nixpkgs";
     xnodeos = {
-      url = "github:Openmesh-Network/xnodeos/v1";
+      url = "github:Openmesh-Network/xnodeos";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
