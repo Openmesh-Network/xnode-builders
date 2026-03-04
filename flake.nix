@@ -533,22 +533,26 @@
                   (inputs.pyproject-nix.lib.project.loadRequirementsTxt {
                     requirements =
                       let
-                        path = src + "/${requirement}";
-                        parentFolder = builtins.dirOf path;
-                        rawContent = builtins.readFile path;
-                        perLine = pkgs.lib.splitString "\n" rawContent;
-                        patchedLines = builtins.map (
-                          line:
+                        processRequirements =
+                          path:
                           let
-                            readFile = pkgs.lib.splitString "-r " line;
+                            parentFolder = builtins.dirOf path;
+                            rawContent = builtins.readFile path;
+                            perLine = pkgs.lib.splitString "\n" rawContent;
+                            patchedLines = builtins.map (
+                              line:
+                              let
+                                readFile = pkgs.lib.splitString "-r " line;
+                              in
+                              if line != "" && builtins.elemAt readFile 0 == "" then
+                                processRequirements "${parentFolder}/${builtins.elemAt readFile 1}"
+                              else
+                                line
+                            ) perLine;
                           in
-                          if line != "" && builtins.elemAt readFile 0 == "" then
-                            builtins.readFile "${parentFolder}/${builtins.elemAt readFile 1}"
-                          else
-                            line
-                        ) perLine;
+                          builtins.concatStringsSep "\n" patchedLines;
                       in
-                      builtins.concatStringsSep "\n" patchedLines;
+                      processRequirements (src + "/${requirement}");
                   }).dependencies.dependencies
                 ) extraRequirements)
                 ++ [ baseProject.dependencies.dependencies ];
@@ -566,6 +570,7 @@
                 // {
                   inherit version;
                   pname = name;
+                  pythonRelaxDeps = true;
                 }
                 // extraPackageArgs
               );
