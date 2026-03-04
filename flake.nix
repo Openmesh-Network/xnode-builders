@@ -565,7 +565,7 @@
             {
               # TODO check
 
-              package = pkgs.python3Packages.buildPythonPackage (
+              package = python.pkgs.buildPythonPackage (
                 (inputs.pyproject-nix.lib.renderers.buildPythonPackage { inherit python project; })
                 // {
                   inherit version;
@@ -612,8 +612,6 @@
               buildInputs =
                 (defaultDevShellBuildInputs { inherit pkgs; })
                 ++ [
-                  pkgs.python
-
                   (pkgs.vscode-with-extensions.override {
                     vscode = pkgs.vscode;
                     vscodeExtensions = (defaultVsCodeExtensions { inherit pkgs; }) ++ [
@@ -627,7 +625,7 @@
                   else if type == "poetry" then
                     [ pkgs.poetry ]
                   else
-                    [ ]
+                    [ pkgs.python ]
                 );
               shellHook = ''
                 code .
