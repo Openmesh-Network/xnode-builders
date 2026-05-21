@@ -78,6 +78,11 @@
           };
 
           cfg = nixArgs.config.services.${name};
+          defaultEnable =
+            if app.module or { } ? defaultEnable then
+              app.module.defaultEnable (nixArgs // { inherit cfg; })
+            else
+              true;
           appOptions =
             if app.module or { } ? options then app.module.options (nixArgs // { inherit cfg; }) else { };
 
@@ -115,7 +120,7 @@
           options = {
             services.${name} = {
               enable = lib.mkEnableOption "Enable ${name}." // {
-                default = true;
+                default = defaultEnable;
               };
 
               package = lib.mkOption {
