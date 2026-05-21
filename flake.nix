@@ -408,6 +408,9 @@
               package = pkgs.buildNpmPackage (
                 {
                   inherit pname version src;
+                  meta = {
+                    mainProgram = name;
+                  };
                 }
                 // (
                   if type == "npm" then
