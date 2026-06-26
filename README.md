@@ -9,11 +9,12 @@ Application builders to run your app seamlessly on XnodeOS.
 Pick a template:  
 `nix flake init -t github:Openmesh-Network/xnode-builders#rust`  
 `nix flake init -t github:Openmesh-Network/xnode-builders#poetry`  
-`nix flake init -t github:Openmesh-Network/xnode-builders#uv`
-`nix flake init -t github:Openmesh-Network/xnode-builders#nodejs`
-`nix flake init -t github:Openmesh-Network/xnode-builders#nextjs`
-`nix flake init -t github:Openmesh-Network/xnode-builders#vite`
-`nix flake init -t github:Openmesh-Network/xnode-builders#astro`
+`nix flake init -t github:Openmesh-Network/xnode-builders#uv`  
+`nix flake init -t github:Openmesh-Network/xnode-builders#go`  
+`nix flake init -t github:Openmesh-Network/xnode-builders#nodejs`  
+`nix flake init -t github:Openmesh-Network/xnode-builders#nextjs`  
+`nix flake init -t github:Openmesh-Network/xnode-builders#vite`  
+`nix flake init -t github:Openmesh-Network/xnode-builders#astro`  
 `nix flake init -t github:Openmesh-Network/xnode-builders#react`
 
 ### Existing Project
