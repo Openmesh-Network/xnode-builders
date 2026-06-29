@@ -268,6 +268,7 @@
         }:
         let
           name = app.name;
+          version = app.version;
           implementation = app.implementation or "crate2nix";
           getArgs = app.getArgs or (_: { });
           args = getArgs { inherit pkgs; };
@@ -332,6 +333,16 @@
             in
             {
               check = build extraCheckArgs;
+
+              package = build extraPackageArgs;
+            }
+          else if implementation == "buildRustPackage" then
+            let
+              rustPlatform = args.rustPlatform or pkgs.rustPlatform;
+              build = (extraArgs: rustPlatform.buildRustPackage ({ inherit name version src; } // extraArgs));
+            in
+            {
+              check = build ({ doCheck = true; } // extraCheckArgs);
 
               package = build extraPackageArgs;
             }
