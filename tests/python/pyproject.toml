@@ -10,4 +10,8 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = []
+package-dir = { "" = "src" }
+packages = ["test_app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

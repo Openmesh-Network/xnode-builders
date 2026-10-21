@@ -1,7 +1,9 @@
 {
   "name": "test-app",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
-    "test": "echo 'no tests'"
+    "build": "node --check index.js",
+    "test": "node --test"
   }
 }

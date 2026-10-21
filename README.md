@@ -80,10 +80,12 @@ The `scope` defines which build the override is applied to:
 | `devshell` | The development shell of the application.              |
 | `common`   | Applies to all of the scopes above.                    |
 
-The `check` scope is only used by the implementations that build the tests of
-the application. The Python and the JavaScript builders do not build tests,
-overrides of the `check` scope are ignored for them. Additional checks can be
-added with [custom outputs](#custom-outputs).
+Every implementation has a `check` scope. The Rust and the Go builders run
+their native test phase, the Python builder runs `pytest` of the package (the
+`check` scope adds the `pytestCheckHook` and enables the install check) and the
+JavaScript builder runs the `test` script of the `package.json` if the package
+has one. Additional checks can be added with
+[custom outputs](#custom-outputs).
 
 #### Implementations
 

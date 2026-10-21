@@ -872,23 +872,38 @@
                   dependencies = builtins.concatLists finalDependencies;
                 };
               };
-              resolved = resolve "package" {
-                buildPythonPackage = {
-                  inherit version;
-                  pname = name;
-                  pythonRelaxDeps = true;
-                };
-              };
+              buildPythonPackage' =
+                scope:
+                let
+                  resolved = resolve scope {
+                    buildPythonPackage = {
+                      inherit version;
+                      pname = name;
+                      pythonRelaxDeps = true;
+                      doCheck = scope == "check";
+                    }
+                    // (
+                      if scope == "check" then
+                        {
+                          nativeCheckInputs = [ python.pkgs.pytestCheckHook ];
+                        }
+                      else
+                        { }
+                    );
+                  };
+                in
+                python.pkgs.buildPythonPackage (
+                  (inputs.pyproject-nix.lib.renderers.buildPythonPackage { inherit python project; })
+                  // (mergeValues {
+                    prev = resolved.stepArgs.buildPythonPackage;
+                    next = resolved.genericArgs;
+                    extendLists = true;
+                  })
+                );
             in
             {
-              package = python.pkgs.buildPythonPackage (
-                (inputs.pyproject-nix.lib.renderers.buildPythonPackage { inherit python project; })
-                // (mergeValues {
-                  prev = resolved.stepArgs.buildPythonPackage;
-                  next = resolved.genericArgs;
-                  extendLists = true;
-                })
-              );
+              check = buildPythonPackage' "check";
+              package = buildPythonPackage' "package";
             }
           else if implementation == "uv2nix" then
             let
@@ -896,14 +911,26 @@
               overlay = workspace.mkPyprojectOverlay {
                 sourcePreference = "wheel";
               };
-              resolved = resolve "package" {
+              resolvedPackage = resolve "package" {
                 pythonSet = { };
                 venv = {
                   venvIgnoreCollisions = [ "*" ];
                 };
                 application = { };
               };
-              pythonSet =
+              resolvedCheck = resolve "check" {
+                pythonSet = { };
+                venv = {
+                  venvIgnoreCollisions = [ "*" ];
+                };
+                application = { };
+              };
+              # Build the Python package of a scope. The `check` scope of
+              # `uv2nix` builds the package of the application with the same
+              # steps as the `package` scope, the generic arguments are
+              # therefore shared by both scopes.
+              mkPythonSet =
+                resolved:
                 (pkgs.callPackage inputs.pyproject-nix.build.packages {
                   inherit python;
                 }).overrideScope
@@ -914,41 +941,52 @@
                       (resolved.stepArgs.pythonSet.override or (final: prev: { }))
                     ])
                   );
-              generic = resolved.genericArgs;
-              pythonPackage =
-                if generic == { } then
-                  pythonSet.${name}
-                else
-                  pythonSet.${name}.overrideAttrs (
-                    old:
-                      lib.filterAttrs (key: _: builtins.hasAttr key generic) (
-                        mergeValues {
-                          prev = old;
-                          next = generic;
-                          extendLists = true;
-                        }
-                      )
-                  );
-              venv =
-                (pythonSet.mkVirtualEnv "${name}-${version}-venv" workspace.deps.default).overrideAttrs (
-                  old: resolved.stepArgs.venv
-                );
-              application =
-                (pkgs.callPackages inputs.pyproject-nix.build.util { }).mkApplication {
-                  inherit venv;
-                  package = pythonPackage;
+              mkPackage =
+                resolved:
+                let
+                  pythonSet = mkPythonSet resolved;
+                  generic = resolved.genericArgs;
+                  package =
+                    if generic == { } then
+                      pythonSet.${name}
+                    else
+                      pythonSet.${name}.overrideAttrs (
+                        old:
+                          lib.filterAttrs (key: _: builtins.hasAttr key generic) (
+                            mergeValues {
+                              prev = old;
+                              next = generic;
+                              extendLists = true;
+                            }
+                          )
+                      );
+                  venv =
+                    (pythonSet.mkVirtualEnv "${name}-${version}-venv" workspace.deps.default).overrideAttrs (
+                      old: resolved.stepArgs.venv
+                    );
+                  application =
+                    (pkgs.callPackages inputs.pyproject-nix.build.util { }).mkApplication {
+                      inherit venv package;
+                    };
+                in
+                {
+                  inherit pythonSet venv package;
+                  result = application.overrideAttrs (old: resolved.stepArgs.application);
                 };
+              pythonPackage = mkPackage resolvedPackage;
+              pythonPackageCheck = mkPackage resolvedCheck;
             in
             {
-              package = application.overrideAttrs (old: resolved.stepArgs.application);
+              check = pythonPackageCheck.result;
+              package = pythonPackage.result;
 
               extra = {
                 inherit
                   appArgs
                   overlay
-                  pythonSet
-                  venv
                   ;
+                pythonSet = pythonPackage.pythonSet;
+                venv = pythonPackage.venv;
                 # Backwards-compatible alias for `appArgs`.
                 args = appArgs;
               };
@@ -1072,6 +1110,26 @@
                 ""
             );
           implementation = app.implementation or "buildNpmPackage";
+          packageJson =
+            if builtins.pathExists (src + "/package.json") then
+              builtins.fromJSON (builtins.readFile (src + "/package.json"))
+            else
+              { };
+          # The command of the `test` script of the package, if it has one.
+          testCommand =
+            let
+              test = packageJson.scripts.test or null;
+            in
+            if type == "npm" then
+              "npm run test"
+            else if type == "yarn" then
+              "yarn run test"
+            else if type == "pnpm" then
+              "pnpm run test"
+            else if type == "bun" then
+              "bun run test"
+            else
+              "npm run test";
           framework =
             app.framework or (
               if
@@ -1224,78 +1282,103 @@
         (
           if implementation == "buildNpmPackage" then
             let
-              resolved = resolve "package" {
-                buildNpmPackage = {
-                  pname = name;
-                  inherit version src;
-                  meta = {
-                    mainProgram = name;
-                  };
-                  installPhase = ''
-                    runHook preInstall
-
-                    mkdir -p $out/{share,bin}
-                    ${builtins.concatStringsSep "\n" (
-                      builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
-                    )}
-                    cat > $out/bin/${name} << EOF
-                    #!${pkgs.lib.getExe pkgs.bash}
-                    ${(installArgs.execute or (args: "")) {
-                      node =
-                        if type == "npm" then
-                          pkgs.lib.getExe pkgs.nodejs
-                        else if type == "yarn" then
-                          pkgs.lib.getExe pkgs.yarn
-                        else if type == "pnpm" then
-                          pkgs.lib.getExe pkgs.pnpm
-                        else if type == "bun" then
-                          pkgs.lib.getExe pkgs.bun
-                        else
-                          "";
-                      npm =
-                        if type == "npm" then
-                          pkgs.lib.getExe' pkgs.nodejs "npm"
-                        else if type == "yarn" then
-                          pkgs.lib.getExe pkgs.yarn
-                        else if type == "pnpm" then
-                          pkgs.lib.getExe pkgs.pnpm
-                        else if type == "bun" then
-                          pkgs.lib.getExe pkgs.bun
-                        else
-                          "";
-                      dir = "$out/share";
-                    }}
-                    EOF
-                    chmod +x $out/bin/${name}
-                    ${installArgs.commands or ""}
-                    ${installArgs.extraCommands or ""}
-
-                    runHook postInstall
-                  '';
-                }
-                // (
-                  if type == "npm" then
-                    {
-                      npmDeps = pkgs.importNpmLock {
+              npmBuild =
+                scope:
+                let
+                  resolved = resolve scope {
+                    buildNpmPackage =
+                      {
                         pname = name;
-                        inherit version;
-                        npmRoot = src;
-                      };
-                      npmConfigHook = pkgs.importNpmLock.npmConfigHook;
-                    }
-                  else
-                    { }
+                        inherit version src;
+                        meta = {
+                          mainProgram = name;
+                        };
+                        doCheck = scope == "check" && packageJson.scripts ? test;
+                        installPhase = ''
+                          runHook preInstall
+
+                          mkdir -p $out/{share,bin}
+                          ${builtins.concatStringsSep "\n" (
+                            builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
+                          )}
+                          cat > $out/bin/${name} << EOF
+                          #!${pkgs.lib.getExe pkgs.bash}
+                          ${(installArgs.execute or (args: "")) {
+                            node =
+                              if type == "npm" then
+                                pkgs.lib.getExe pkgs.nodejs
+                              else if type == "yarn" then
+                                pkgs.lib.getExe pkgs.yarn
+                              else if type == "pnpm" then
+                                pkgs.lib.getExe pkgs.pnpm
+                              else if type == "bun" then
+                                pkgs.lib.getExe pkgs.bun
+                              else
+                                "";
+                            npm =
+                              if type == "npm" then
+                                pkgs.lib.getExe' pkgs.nodejs "npm"
+                              else if type == "yarn" then
+                                pkgs.lib.getExe pkgs.yarn
+                              else if type == "pnpm" then
+                                pkgs.lib.getExe pkgs.pnpm
+                              else if type == "bun" then
+                                pkgs.lib.getExe pkgs.bun
+                              else
+                                "";
+                            dir = "$out/share";
+                          }}
+                          EOF
+                          chmod +x $out/bin/${name}
+                          ${installArgs.commands or ""}
+                          ${installArgs.extraCommands or ""}
+
+                          runHook postInstall
+                        '';
+                      }
+                      // (
+                        if type == "npm" then
+                          {
+                            npmDeps = pkgs.importNpmLock {
+                              pname = name;
+                              inherit version;
+                              npmRoot = src;
+                            };
+                            npmConfigHook = pkgs.importNpmLock.npmConfigHook;
+                          }
+                        else
+                          { }
+                      )
+                      // (
+                        # `buildNpmPackage` does not run the tests of the
+                        # package, the check scope adds a check phase that
+                        # runs the `test` script of the package.
+                        if scope == "check" && packageJson.scripts ? test then
+                          {
+                            checkPhase = ''
+                              runHook preCheck
+
+                              ${testCommand}
+
+                              runHook postCheck
+                            '';
+                          }
+                        else
+                          { }
+                      );
+                  };
+                in
+                pkgs.buildNpmPackage (
+                  mergeValues {
+                    prev = resolved.stepArgs.buildNpmPackage;
+                    next = resolved.genericArgs;
+                    extendLists = true;
+                  }
                 );
-              };
             in
             {
-              package = pkgs.buildNpmPackage (
-                mergeValues {
-                  prev = resolved.stepArgs.buildNpmPackage;
-                  next = resolved.genericArgs;
-                  extendLists = true;
-                }
-              );
+              check = npmBuild "check";
+              package = npmBuild "package";
             }
           else
             builtins.throw "Unknown implementation ${implementation}"
@@ -1576,6 +1659,21 @@
                 }
               else
                 null;
+
+            # The Python app of the `pyproject.nix` implementation. The
+            # check scope builds the package with its tests.
+            python =
+              language.python {
+                src = ./tests/python;
+                implementation = "pyproject.nix";
+              };
+
+            # The JavaScript app. The check scope runs the `test` script of
+            # the package.
+            javascript =
+              language.javascript {
+                src = ./tests/javascript;
+              };
           in
           assertions (
             {
@@ -1623,6 +1721,36 @@
             "custom-output-arguments" =
               withOutputs.packages.${system}.test-app-extra-package.drvAttrs.package.drvAttrs.name
               == withOutputs.packages.${system}.test-app.drvAttrs.name;
+
+            # The check scope of the Python implementation runs the tests
+            # of the package, the package scope does not.
+            "python-check-argument" =
+              python.checks.${system}.test-app.drvAttrs.doInstallCheck == true
+              && python.packages.${system}.test-app.drvAttrs.doInstallCheck == false;
+
+            # The check scope of the Python implementation adds the pytest
+            # hook to the build, the package scope does not.
+            "python-check-inputs" =
+              builtins.elem "pytest-check-hook" (
+                map (input: input.name or input.pname or "?")
+                  python.checks.${system}.test-app.drvAttrs.nativeBuildInputs
+              )
+              && !(builtins.elem "pytest-check-hook" (
+                map (input: input.name or input.pname or "?")
+                  python.packages.${system}.test-app.drvAttrs.nativeBuildInputs
+              ));
+
+            # The check scope of the JavaScript implementation runs the
+            # `test` script of the package, the package scope does not.
+            "javascript-check-argument" =
+              javascript.checks.${system}.test-app.drvAttrs.doCheck == true
+              && javascript.packages.${system}.test-app.drvAttrs.doCheck == false;
+
+            # The JavaScript implementation has no built-in check phase, the
+            # check scope adds one.
+            "javascript-check-phase" =
+              javascript.checks.${system}.test-app.drvAttrs ? checkPhase
+              && !(javascript.packages.${system}.test-app.drvAttrs ? checkPhase);
             }
             // (
               if crate2nix == null then
