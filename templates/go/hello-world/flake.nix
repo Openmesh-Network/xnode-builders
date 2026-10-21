@@ -9,12 +9,6 @@
       name = "hello-world";
       version = "1.0.0";
       src = ./.;
-      getArgs =
-        { ... }:
-        {
-          extraPackageArgs = {
-            vendorHash = null;
-          };
-        };
+      override.package.buildGoModule.vendorHash = null;
     };
 }

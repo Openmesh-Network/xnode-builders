@@ -27,12 +27,13 @@
               hash = "sha256-svxx9B3O6b6ILq0TrtabSfSgR6vYGIq1pFNaCm+sA10=";
             }
             + "/rust-app";
-
-          extraArgs = {
-            crateOverrides = pkgs.defaultCrateOverrides // {
-              xnode-manager = attrs: {
-                buildInputs = [ pkgs.acl ];
-              };
+        };
+      override =
+        { pkgs, ... }:
+        {
+          package.crate2nix.build.crateOverrides = pkgs.defaultCrateOverrides // {
+            xnode-manager = attrs: {
+              buildInputs = [ pkgs.acl ];
             };
           };
         };

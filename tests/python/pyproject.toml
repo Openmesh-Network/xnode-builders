@@ -1,0 +1,13 @@
+[project]
+name = "test-app"
+version = "1.0.0"
+description = "Test app"
+requires-python = ">=3.9"
+dependencies = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []

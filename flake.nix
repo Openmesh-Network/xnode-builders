@@ -58,6 +58,260 @@
           ) systems
         );
 
+      # The same as `eachSystem`, but the result of every system is nested
+      # under the name of the system.
+      eachSystemBySystem =
+        pkgsImport: f:
+        lib.genAttrs systems (
+          system:
+          f {
+            inherit system;
+            pkgs = import inputs.nixpkgs (
+              {
+                inherit system;
+                config.allowUnfree = true;
+              }
+              // pkgsImport
+            );
+          }
+        );
+
+      lib = inputs.nixpkgs.lib;
+
+      # ==================================================================
+      # Override system
+      # ==================================================================
+      #
+      # Every argument of every build step can be customized with
+      #
+      #   override.<scope>.<implementation>.<slot>
+      #
+      # `scope` is one of
+      #
+      #   check       the check (test) build
+      #   package     the package build
+      #   devshell    the development shell
+      #   common      applies to all of the scopes above
+      #
+      # `implementation` is one of
+      #
+      #   crate2nix, naersk, crane, buildRustPackage,
+      #   pyproject.nix, uv2nix, buildGoModule, buildNpmPackage
+      #
+      #   common      applies to all of the implementations above
+      #
+      # `slot` is either
+      #
+      #   * the name of a build step of the implementation
+      #     (e.g. `buildPackage`, `buildDepsOnly`, `build`, `shell`, ...)
+      #     in which case its value is an attribute set of arguments for
+      #     that step, or
+      #
+      #   * a generic build argument (e.g. `buildInputs`, `nativeBuildInputs`,
+      #     `env`, `meta`, ...) in which case its value is applied to the
+      #     build of the implementation, wherever it fits best.
+      #
+      # The layers are applied from the least to the most specific one,
+      # every layer overwrites the previous one:
+      #
+      #   1. the defaults of the implementation
+      #   2. override.common.common
+      #   3. override.common.<implementation>
+      #   4. override.<scope>.common
+      #   5. override.<scope>.<implementation>
+      #
+      # Attribute sets are merged recursively, every other value is
+      # overwritten. Values of list arguments can be functions of their
+      # previous value to extend them without losing the defaults:
+      #
+      #   buildInputs = prev: prev ++ [ pkgs.hello ];
+      #
+      # Generic arguments are additive: their lists are appended to the
+      # lists of the build instead of replacing them. The arguments of a
+      # build step replace the defaults of the step.
+      #
+
+      # Arguments that hold a list and can therefore be extended with a
+      # function of their previous value.
+      mergeableKeys = [
+        "buildInputs"
+        "buildInputs64"
+        "checkInputs"
+        "nativeBuildInputs"
+        "nativeCheckInputs"
+        "propagatedBuildInputs"
+        "propagatedNativeBuildInputs"
+        "testInputs"
+        "patches"
+        "makeFlags"
+        "configureFlags"
+        "buildFlags"
+        "checkFlags"
+        "installFlags"
+      ];
+
+      # Whether a value is a derivation. `lib.isDerivation` cannot be used
+      # because it fails on values without a `type` attribute.
+      isDerivation = value: builtins.isAttrs value && (value ? drvPath);
+
+      # Merge `next` into `prev`. Attribute sets are merged recursively,
+      # every other value of `next` overwrites the value of `prev`.
+      # Functions of list arguments are applied to their previous value.
+      # With `extendLists`, lists are concatenated instead of overwritten.
+      mergeValues =
+        {
+          prev,
+          next,
+          extendLists ? false,
+        }:
+        let
+          mergeKey =
+            key:
+            let
+              previous = prev.${key};
+              value = next.${key};
+            in
+            if builtins.isAttrs previous && builtins.isAttrs value then
+              mergeValues {
+                prev = previous;
+                next = value;
+                inherit extendLists;
+              }
+            else if builtins.isFunction value && (builtins.elem key mergeableKeys) then
+              (
+                if builtins.hasAttr key prev then
+                  value previous
+                else
+                  value [ ]
+              )
+            else if extendLists && builtins.isList previous && builtins.isList value then
+              previous ++ value
+            else
+              value;
+          shared = builtins.filter (
+            key: builtins.hasAttr key prev && builtins.hasAttr key next
+          ) (builtins.attrNames next);
+        in
+        prev
+        // next
+        // builtins.listToAttrs (builtins.map (key: lib.nameValuePair key (mergeKey key)) shared);
+
+      # Build steps of every implementation. `shell` (the development shell)
+      # is available for every implementation.
+      implementationSteps = {
+        crate2nix = [ "build" ];
+        naersk = [ "buildPackage" ];
+        crane = [
+          "buildPackage"
+          "buildDepsOnly"
+        ];
+        buildRustPackage = [ "buildPackage" ];
+        "pyproject.nix" = [ "buildPythonPackage" ];
+        uv2nix = [
+          "pythonSet"
+          "venv"
+          "application"
+        ];
+        buildGoModule = [ "buildGoModule" ];
+        buildNpmPackage = [ "buildNpmPackage" ];
+      };
+
+      # Arguments of an implementation that are handled by the implementation
+      # itself and can therefore not be applied generically.
+      implementationSpecialArgs = {
+        crate2nix = {
+          features = "build";
+          crateOverrides = "build";
+          runTests = "build";
+          testCrateFlags = "build";
+          testInputs = "build";
+          testPreRun = "build";
+          testPostRun = "build";
+        };
+        naersk = { };
+        crane = { };
+        buildRustPackage = { };
+        "pyproject.nix" = { };
+        uv2nix = { override = "pythonSet"; };
+        buildGoModule = { };
+        buildNpmPackage = { };
+      };
+
+      commonSteps = [ "shell" ];
+
+      # The build steps that are available in a scope. The development shell
+      # only has the `shell` step, the other scopes have the steps of the
+      # implementation.
+      scopeSteps =
+        scope: implementation:
+        if scope == "devshell" then
+          commonSteps
+        else
+          implementationSteps.${implementation} or [ ];
+
+      # Resolve the override tree of a scope for an implementation.
+      #
+      # Returns the arguments of every step of the scope (`stepArgs`) and the
+      # generic arguments that have to be applied by the implementation
+      # (`genericArgs`).
+      resolveOverrides =
+        {
+          override,
+          scope,
+          implementation,
+          defaults,
+          specialArgs,
+        }:
+        let
+          knownSteps = scopeSteps scope implementation;
+          layers = [
+            (override.common.common or { })
+            (override.common.${implementation} or { })
+            (override.${scope}.common or { })
+            (override.${scope}.${implementation} or { })
+          ];
+          isStep = slot: builtins.elem slot knownSteps;
+          isSpecial = slot: builtins.hasAttr slot specialArgs;
+          fold =
+            acc:
+            layer:
+            let
+              stepSlots = lib.filterAttrs (slot: _: isStep slot) layer;
+              specialSlots = lib.filterAttrs (slot: _: isSpecial slot) layer;
+              genericSlots = lib.filterAttrs (slot: _: !(isStep slot) && !(isSpecial slot)) layer;
+              mergeStep =
+                step:
+                previous:
+                let
+                  special = lib.filterAttrs (slot: target: target == step) specialSlots;
+                in
+                mergeValues {
+                  prev = mergeValues {
+                    prev = previous;
+                    next = special;
+                  };
+                  next = stepSlots.${step} or { };
+                };
+              newSteps = lib.filterAttrs (step: _: !(builtins.hasAttr step acc.stepArgs)) stepSlots;
+              stepArgs =
+                lib.mapAttrs (step: previous: mergeStep step previous) acc.stepArgs
+                // lib.mapAttrs (step: _: mergeStep step { }) newSteps;
+            in
+            {
+              stepArgs = stepArgs;
+              genericArgs = mergeValues {
+                prev = acc.genericArgs;
+                next = genericSlots;
+                extendLists = true;
+              };
+            };
+          initial = {
+            stepArgs = defaults;
+            genericArgs = { };
+          };
+        in
+        builtins.foldl' fold initial layers;
+
       defaultModule =
         {
           app,
@@ -76,6 +330,7 @@
           system = pkgs.stdenv.hostPlatform.system;
           output = builder {
             inherit system pkgs app;
+            appArgs = (app.getArgs or (_: { })) { inherit pkgs; };
           };
 
           cfg = nixArgs.config.services.${name};
@@ -96,7 +351,8 @@
               toNixOptions opt
           );
           toNixConfig =
-            options: config:
+            options:
+            config:
             builtins.concatMap (
               optName:
               let
@@ -210,6 +466,7 @@
           name = app.name;
           default = app.default or true;
           pkgsImport = app.pkgsImport or { };
+          customOutputs = app.outputs or { };
         in
         combine [
           (eachSystem pkgsImport (
@@ -218,17 +475,49 @@
               pkgs,
             }:
             let
+              appArgs = (app.getArgs or (_: { })) { inherit pkgs; };
               output = args.appBuilder {
-                inherit system pkgs app;
+                inherit system pkgs app appArgs;
               };
+              src = if app ? src then app.src else (appArgs.src or null);
+              custom =
+                lib.mapAttrs (
+                  key: builder:
+                  let
+                    result = builder {
+                      inherit pkgs system app appArgs src;
+                      package = output.package;
+                      check = output.check or null;
+                    };
+                  in
+                  # A derivation is a package, an attribute set with a
+                  # `check` and/or a `package` attribute defines both of
+                  # them separately.
+                  if isDerivation result then
+                    { package = result; }
+                  else if builtins.isAttrs result && (result ? package || result ? check) then
+                    result
+                  else
+                    { package = result; }
+                ) customOutputs;
+              customChecks = lib.filterAttrs (_: value: value ? check) custom;
+              customPackages = lib.filterAttrs (_: value: value ? package) custom;
             in
             {
-              checks.${system}.${name} = output.check;
+              checks.${system} =
+                (if output ? check then { ${name} = output.check; } else { })
+                // lib.mapAttrs' (
+                  key: value: lib.nameValuePair "${name}-${key}" value.check
+                ) customChecks;
 
-              packages.${system} = {
-                ${name} = output.package;
-              }
-              // (if default then { default = output.package; } else { });
+              packages.${system} =
+                {
+                  ${name} = output.package;
+                }
+                // lib.mapAttrs' (
+                  key: value: lib.nameValuePair "${name}-${key}" value.package
+                ) customPackages
+                // (if default then { default = output.package; } else { });
 
               devShells.${system} = {
                 ${name} = output.devShell;
@@ -265,133 +554,273 @@
           system,
           pkgs,
           app,
+          appArgs,
         }:
         let
           name = app.name;
           version = app.version;
+          crateName = app.crateName or name;
           implementation = app.implementation or "crate2nix";
-          getArgs = app.getArgs or (_: { });
-          args = getArgs { inherit pkgs; };
-          src = app.src or args.src;
-          extraCheckArgs = args.extraCheckArgs or args.extraArgs or { };
-          extraPackageArgs = args.extraPackageArgs or args.extraArgs or { };
-          extraDevShellArgs = args.extraDevShellArgs or args.extraArgs or { };
+          src = if app ? src then app.src else (appArgs.src or null);
+          override =
+            let
+              raw = app.override or { };
+            in
+            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
+          craneLib = inputs.crane.mkLib pkgs;
+
+          resolve =
+            scope:
+            defaults:
+            resolveOverrides {
+              inherit override scope implementation defaults;
+              specialArgs = implementationSpecialArgs.${implementation} or { };
+            };
+
+          # Arguments accepted by the `build` step of the crate2nix build.
+          crate2nixArgs = [
+            "features"
+            "runTests"
+            "testCrateFlags"
+            "testInputs"
+            "testPreRun"
+            "testPostRun"
+          ];
+
+          crate2nixBuild =
+            scope:
+            let
+              resolved = resolve scope {
+                build = {
+                  runTests = scope == "check";
+                };
+              };
+              args = resolved.stepArgs.build;
+              # The arguments that the `build` step does not accept are
+              # applied to the crate of the application, like the generic
+              # arguments.
+              generic = mergeValues {
+                prev = resolved.genericArgs;
+                next = lib.filterAttrs (
+                  key: _: !(builtins.elem key crate2nixArgs) && key != "crateOverrides"
+                ) args;
+                extendLists = true;
+              };
+              userOverrides = args.crateOverrides or { };
+              combined = pkgs.defaultCrateOverrides // userOverrides;
+              rootOverride = combined.${crateName} or (attrs: attrs);
+              crateOverrides =
+                if generic == { } then
+                  (if userOverrides == { } then { } else combined)
+                else
+                  combined // {
+                    ${crateName} =
+                      attrs:
+                      mergeValues {
+                        prev = rootOverride attrs;
+                        next = generic;
+                        extendLists = true;
+                      };
+                  };
+            in
+            lib.filterAttrs (key: _: builtins.elem key crate2nixArgs) args
+            // (if crateOverrides == { } then { } else { inherit crateOverrides; });
+
+          naerskBuild =
+            scope:
+            let
+              resolved = resolve scope {
+                buildPackage = {
+                  inherit name src;
+                  mode = if scope == "check" then "test" else "build";
+                };
+              };
+            in
+            mergeValues {
+              prev = resolved.stepArgs.buildPackage;
+              next = resolved.genericArgs;
+              extendLists = true;
+            };
+
+          craneBuild =
+            scope:
+            let
+              resolved = resolve scope {
+                buildPackage = {
+                  src = craneLib.cleanCargoSource src;
+                  strictDeps = true;
+                  doCheck = scope == "check";
+                };
+                buildDepsOnly = { };
+              };
+              packageArgs = mergeValues {
+                prev = resolved.stepArgs.buildPackage;
+                next = resolved.genericArgs;
+                extendLists = true;
+              };
+              depsArgs = mergeValues {
+                prev = packageArgs;
+                next = resolved.stepArgs.buildDepsOnly;
+              };
+              cargoArtifacts = packageArgs.cargoArtifacts or (craneLib.buildDepsOnly depsArgs);
+            in
+            packageArgs // { inherit cargoArtifacts; };
+
+          buildRustPackageBuild =
+            scope:
+            let
+              rustPlatform = appArgs.rustPlatform or pkgs.rustPlatform;
+              resolved = resolve scope {
+                buildPackage = {
+                  inherit name version src;
+                  doCheck = scope == "check";
+                };
+              };
+            in
+            rustPlatform.buildRustPackage (
+              mergeValues {
+                prev = resolved.stepArgs.buildPackage;
+                next = resolved.genericArgs;
+                extendLists = true;
+              }
+            );
+
+          devShell =
+            let
+              resolved = resolve "devshell" {
+                shell = {
+                  buildInputs = (defaultDevShellBuildInputs { inherit pkgs; }) ++ [
+                    pkgs.cargo
+                    pkgs.rustc
+                    pkgs.rustfmt
+                    pkgs.clippy
+
+                    (pkgs.vscode-with-extensions.override {
+                      vscode = pkgs.vscode;
+                      vscodeExtensions = (defaultVsCodeExtensions { inherit pkgs; }) ++ [
+                        pkgs.vscode-extensions.rust-lang.rust-analyzer
+                        pkgs.vscode-extensions.tamasfe.even-better-toml
+                      ];
+                    })
+                  ];
+                  RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
+                  shellHook = ''
+                    code .
+                  '';
+                };
+              };
+            in
+            pkgs.mkShell (
+              mergeValues {
+                prev = resolved.stepArgs.shell;
+                next = resolved.genericArgs;
+                extendLists = true;
+              }
+            );
         in
         (
           if implementation == "crate2nix" then
             let
-              build =
-                (inputs.crate2nix.tools.${system}.appliedCargoNix {
+              build = (
+                inputs.crate2nix.tools.${system}.appliedCargoNix {
                   inherit name src;
-                }).rootCrate.build;
+                }
+              ).rootCrate.build;
             in
             {
-              check = build.override (
-                {
-                  runTests = true;
-                }
-                // extraCheckArgs
+              check = build.override (crate2nixBuild "check");
 
-              );
-
-              package = build.override extraPackageArgs;
+              package = build.override (crate2nixBuild "package");
             }
           else if implementation == "naersk" then
             let
               naersk' = pkgs.callPackage inputs.naersk { };
-              build = (
-                extraArgs:
-                naersk'.buildPackage (
-                  {
-                    inherit name src;
-                  }
-                  // extraArgs
-                )
-              );
             in
             {
-              check = build ({ mode = "test"; } // extraCheckArgs);
+              check = naersk'.buildPackage (naerskBuild "check");
 
-              package = build extraPackageArgs;
+              package = naersk'.buildPackage (naerskBuild "package");
             }
           else if implementation == "crane" then
-            let
-              craneLib = inputs.crane.mkLib pkgs;
-              commonArgs = {
-                src = craneLib.cleanCargoSource src;
-                strictDeps = true;
-              };
-              build = (
-                extraArgs:
-                craneLib.buildPackage (
-                  (commonArgs // extraArgs)
-                  // {
-                    cargoArtifacts = craneLib.buildDepsOnly (commonArgs // extraArgs);
-                  }
-                )
-              );
-            in
             {
-              check = build extraCheckArgs;
+              check = craneLib.buildPackage (craneBuild "check");
 
-              package = build extraPackageArgs;
+              package = craneLib.buildPackage (craneBuild "package");
             }
           else if implementation == "buildRustPackage" then
-            let
-              rustPlatform = args.rustPlatform or pkgs.rustPlatform;
-              build = (extraArgs: rustPlatform.buildRustPackage ({ inherit name version src; } // extraArgs));
-            in
             {
-              check = build ({ doCheck = true; } // extraCheckArgs);
+              check = buildRustPackageBuild "check";
 
-              package = build extraPackageArgs;
+              package = buildRustPackageBuild "package";
             }
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // {
-          devShell = pkgs.mkShell (
-            {
-              buildInputs = (defaultDevShellBuildInputs { inherit pkgs; }) ++ [
-                pkgs.cargo
-                pkgs.rustc
-                pkgs.rustfmt
-                pkgs.clippy
-
-                (pkgs.vscode-with-extensions.override {
-                  vscode = pkgs.vscode;
-                  vscodeExtensions = (defaultVsCodeExtensions { inherit pkgs; }) ++ [
-                    pkgs.vscode-extensions.rust-lang.rust-analyzer
-                    pkgs.vscode-extensions.tamasfe.even-better-toml
-                  ];
-                })
-              ];
-              RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
-              shellHook = ''
-                code .
-              '';
-            }
-            // extraDevShellArgs
-          );
-        };
+        // { inherit devShell; };
 
       pythonApp =
         {
           system,
           pkgs,
           app,
+          appArgs,
         }:
         let
           name = app.name;
           version = app.version;
-          getArgs = app.getArgs or (_: { });
-          args = getArgs { inherit pkgs; };
-          src = app.src or args.src;
+          src = if app ? src then app.src else (appArgs.src or null);
           type = app.type or (if builtins.pathExists (src + "/uv.lock") then "uv" else "");
           implementation = app.implementation or (if type == "uv" then "uv2nix" else "pyproject.nix");
-          # extraCheckArgs = args.extraCheckArgs or args.extraArgs or { };
-          extraPackageArgs = args.extraPackageArgs or args.extraArgs or { };
-          extraDevShellArgs = args.extraDevShellArgs or args.extraArgs or { };
+          override =
+            let
+              raw = app.override or { };
+            in
+            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
+          python = appArgs.python or pkgs.python3;
+
+          resolve =
+            scope:
+            defaults:
+            resolveOverrides {
+              inherit override scope implementation defaults;
+              specialArgs = implementationSpecialArgs.${implementation} or { };
+            };
+
+          devShell =
+            let
+              resolved = resolve "devshell" {
+                shell = {
+                  buildInputs =
+                    (defaultDevShellBuildInputs { inherit pkgs; })
+                    ++ [
+                      (pkgs.vscode-with-extensions.override {
+                        vscode = pkgs.vscode;
+                        vscodeExtensions = (defaultVsCodeExtensions { inherit pkgs; }) ++ [
+                          pkgs.vscode-extensions.ms-python.python
+                        ];
+                      })
+                    ]
+                    ++ (
+                      if type == "uv" then
+                        [ pkgs.uv ]
+                      else if type == "poetry" then
+                        [ pkgs.poetry ]
+                      else
+                        [ pkgs.python ]
+                    );
+                  shellHook = ''
+                    code .
+                  '';
+                };
+              };
+            in
+            pkgs.mkShell (
+              mergeValues {
+                prev = resolved.stepArgs.shell;
+                next = resolved.genericArgs;
+                extendLists = true;
+              }
+            );
         in
         (
           if implementation == "pyproject.nix" then
@@ -403,9 +832,8 @@
                   "loadPoetryPyproject"
                 else
                   "loadPyproject";
-              extraRequirements = args.extraRequirements or [ ];
-              python = args.python or pkgs.python3;
-              pyproject = pkgs.lib.importTOML (src + (args.pyproject or "/pyproject.toml"));
+              extraRequirements = appArgs.extraRequirements or [ ];
+              pyproject = pkgs.lib.importTOML (src + (appArgs.pyproject or "/pyproject.toml"));
               baseProject = inputs.pyproject-nix.lib.project.${loader} ({
                 inherit pyproject;
                 projectRoot = src;
@@ -444,18 +872,22 @@
                   dependencies = builtins.concatLists finalDependencies;
                 };
               };
-            in
-            {
-              # TODO check
-
-              package = python.pkgs.buildPythonPackage (
-                (inputs.pyproject-nix.lib.renderers.buildPythonPackage { inherit python project; })
-                // {
+              resolved = resolve "package" {
+                buildPythonPackage = {
                   inherit version;
                   pname = name;
                   pythonRelaxDeps = true;
-                }
-                // extraPackageArgs
+                };
+              };
+            in
+            {
+              package = python.pkgs.buildPythonPackage (
+                (inputs.pyproject-nix.lib.renderers.buildPythonPackage { inherit python project; })
+                // (mergeValues {
+                  prev = resolved.stepArgs.buildPythonPackage;
+                  next = resolved.genericArgs;
+                  extendLists = true;
+                })
               );
             }
           else if implementation == "uv2nix" then
@@ -464,7 +896,13 @@
               overlay = workspace.mkPyprojectOverlay {
                 sourcePreference = "wheel";
               };
-              python = args.python or pkgs.python3;
+              resolved = resolve "package" {
+                pythonSet = { };
+                venv = {
+                  venvIgnoreCollisions = [ "*" ];
+                };
+                application = { };
+              };
               pythonSet =
                 (pkgs.callPackage inputs.pyproject-nix.build.packages {
                   inherit python;
@@ -473,137 +911,153 @@
                     pkgs.lib.composeManyExtensions ([
                       inputs.pyproject-build-systems.overlays.wheel
                       overlay
-                      (extraPackageArgs.override or (final: prev: { }))
+                      (resolved.stepArgs.pythonSet.override or (final: prev: { }))
                     ])
                   );
+              generic = resolved.genericArgs;
+              pythonPackage =
+                if generic == { } then
+                  pythonSet.${name}
+                else
+                  pythonSet.${name}.overrideAttrs (
+                    old:
+                      lib.filterAttrs (key: _: builtins.hasAttr key generic) (
+                        mergeValues {
+                          prev = old;
+                          next = generic;
+                          extendLists = true;
+                        }
+                      )
+                  );
               venv =
-                (pythonSet.mkVirtualEnv "${name}-${version}-venv" workspace.deps.default).overrideAttrs
-                  (old: {
-                    venvIgnoreCollisions = [ "*" ];
-                  });
+                (pythonSet.mkVirtualEnv "${name}-${version}-venv" workspace.deps.default).overrideAttrs (
+                  old: resolved.stepArgs.venv
+                );
+              application =
+                (pkgs.callPackages inputs.pyproject-nix.build.util { }).mkApplication {
+                  inherit venv;
+                  package = pythonPackage;
+                };
             in
             {
-              # TODO check
-
-              package = (pkgs.callPackages inputs.pyproject-nix.build.util { }).mkApplication {
-                inherit venv;
-                package = pythonSet.${name};
-              };
+              package = application.overrideAttrs (old: resolved.stepArgs.application);
 
               extra = {
                 inherit
-                  args
+                  appArgs
                   overlay
                   pythonSet
                   venv
                   ;
+                # Backwards-compatible alias for `appArgs`.
+                args = appArgs;
               };
             }
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // {
-          devShell = pkgs.mkShell (
-            {
-              buildInputs =
-                (defaultDevShellBuildInputs { inherit pkgs; })
-                ++ [
-                  (pkgs.vscode-with-extensions.override {
-                    vscode = pkgs.vscode;
-                    vscodeExtensions = (defaultVsCodeExtensions { inherit pkgs; }) ++ [
-                      pkgs.vscode-extensions.ms-python.python
-                    ];
-                  })
-                ]
-                ++ (
-                  if type == "uv" then
-                    [ pkgs.uv ]
-                  else if type == "poetry" then
-                    [ pkgs.poetry ]
-                  else
-                    [ pkgs.python ]
-                );
-              shellHook = ''
-                code .
-              '';
-            }
-            // extraDevShellArgs
-          );
-        };
+        // { inherit devShell; };
 
       goApp =
         {
           system,
           pkgs,
           app,
+          appArgs,
         }:
         let
           name = app.name;
           version = app.version;
-          getArgs = app.getArgs or (_: { });
-          args = getArgs { inherit pkgs; };
-          src = app.src or args.src;
+          src = if app ? src then app.src else (appArgs.src or null);
           implementation = app.implementation or "buildGoModule";
-          # extraCheckArgs = args.extraCheckArgs or args.extraArgs or { };
-          extraPackageArgs = args.extraPackageArgs or args.extraArgs or { };
-          extraDevShellArgs = args.extraDevShellArgs or args.extraArgs or { };
-        in
-        (
-          if implementation == "buildGoModule" then
+          override =
             let
-              pname = name;
+              raw = app.override or { };
             in
-            {
-              # TODO check
+            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
 
-              package = pkgs.buildGoModule (
-                {
-                  inherit pname version src;
+          resolve =
+            scope:
+            defaults:
+            resolveOverrides {
+              inherit override scope implementation defaults;
+              specialArgs = implementationSpecialArgs.${implementation} or { };
+            };
+
+          goBuild =
+            scope:
+            let
+              resolved = resolve scope {
+                buildGoModule = {
+                  pname = name;
+                  inherit version src;
                   vendorHash = pkgs.lib.fakeHash;
-                  doCheck = false;
+                  doCheck = scope == "check";
                   meta = {
                     mainProgram = name;
                   };
-                }
-                // extraPackageArgs
-              );
+                };
+              };
+            in
+            pkgs.buildGoModule (
+              mergeValues {
+                prev = resolved.stepArgs.buildGoModule;
+                next = resolved.genericArgs;
+                extendLists = true;
+              }
+            );
+
+          devShell =
+            let
+              resolved = resolve "devshell" {
+                shell = {
+                  buildInputs = (defaultDevShellBuildInputs { inherit pkgs; }) ++ [
+                    pkgs.go
+
+                    (pkgs.vscode-with-extensions.override {
+                      vscode = pkgs.vscode;
+                      vscodeExtensions = (defaultVsCodeExtensions { inherit pkgs; }) ++ [
+                        pkgs.vscode-extensions.golang.go
+                      ];
+                    })
+                  ];
+                  shellHook = ''
+                    code .
+                  '';
+                };
+              };
+            in
+            pkgs.mkShell (
+              mergeValues {
+                prev = resolved.stepArgs.shell;
+                next = resolved.genericArgs;
+                extendLists = true;
+              }
+            );
+        in
+        (
+          if implementation == "buildGoModule" then
+            {
+              check = goBuild "check";
+
+              package = goBuild "package";
             }
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // {
-          devShell = pkgs.mkShell (
-            {
-              buildInputs = (defaultDevShellBuildInputs { inherit pkgs; }) ++ [
-                pkgs.go
-
-                (pkgs.vscode-with-extensions.override {
-                  vscode = pkgs.vscode;
-                  vscodeExtensions = (defaultVsCodeExtensions { inherit pkgs; }) ++ [
-                    pkgs.vscode-extensions.golang.go
-                  ];
-                })
-              ];
-              shellHook = ''
-                code .
-              '';
-            }
-            // extraDevShellArgs
-          );
-        };
+        // { inherit devShell; };
 
       javascriptApp =
         {
           system,
           pkgs,
           app,
+          appArgs,
         }:
         let
           name = app.name;
           version = app.version;
-          getArgs = app.getArgs or (_: { });
-          args = getArgs { inherit pkgs; };
-          src = app.src or args.src;
+          src = if app ? src then app.src else (appArgs.src or null);
           type =
             app.type or (
               if builtins.pathExists (src + "/package-lock.json") then
@@ -644,239 +1098,246 @@
               else
                 ""
             );
-          # extraCheckArgs = args.extraCheckArgs or args.extraArgs or { };
-          extraPackageArgs = args.extraPackageArgs or args.extraArgs or { };
-          extraDevShellArgs = args.extraDevShellArgs or args.extraArgs or { };
+          override =
+            let
+              raw = app.override or { };
+            in
+            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
+
+          resolve =
+            scope:
+            defaults:
+            resolveOverrides {
+              inherit override scope implementation defaults;
+              specialArgs = implementationSpecialArgs.${implementation} or { };
+            };
+
+          installArgs =
+            (
+              if framework == "nextjs" then
+                {
+                  copy = [
+                    ".next"
+                    "public"
+                    "node_modules"
+                    "package.json"
+                  ];
+                  execute = args: "cd ${args.dir} && ${args.npm} run start";
+                  commands = ''
+                    # https://github.com/vercel/next.js/discussions/58864
+                    ln -s /var/cache/${name} $out/share/.next/cache
+                  '';
+                }
+              else if framework == "vite" || framework == "astro" then
+                {
+                  copy = [ "dist" ];
+                  execute = args: "${pkgs.lib.getExe pkgs.static-web-server} --port 3000 --root ${args.dir}/dist";
+                }
+              else if framework == "react" then
+                {
+                  copy = [ "build" ];
+                  execute = args: "${pkgs.lib.getExe pkgs.static-web-server} --port 3000 --root ${args.dir}/build";
+                }
+              else if framework == "nextjs-standalone" then
+                {
+                  copy = [
+                    ".next"
+                    "public"
+                  ];
+                  execute = args: "${args.node} ${args.dir}/server.js";
+                  commands = ''
+                    # https://github.com/vercel/next.js/discussions/58864
+                    ln -s /var/cache/${name} $out/share/.next/cache
+                    mv $out/share/.next/standalone/* $out/share
+                  '';
+                }
+              else if framework == "astro-node" then
+                {
+                  copy = [
+                    "dist"
+                    "node_modules"
+                  ];
+                  execute = args: "${args.node} ${args.dir}/dist/server/entry.mjs";
+                }
+              else if framework == "astro-node-noext" then
+                {
+                  copy = [ "dist" ];
+                  execute = args: "${args.node} ${args.dir}/dist/server/entry.mjs";
+                }
+              else
+                { }
+            )
+            // (appArgs.frameworkArgs or { });
+
+          devShell =
+            let
+              resolved = resolve "devshell" {
+                shell = {
+                  buildInputs =
+                    (defaultDevShellBuildInputs { inherit pkgs; })
+                    ++ [
+                      pkgs.python
+
+                      (pkgs.vscode-with-extensions.override {
+                        vscode = pkgs.vscode;
+                        vscodeExtensions =
+                          (defaultVsCodeExtensions { inherit pkgs; })
+                          ++ [
+                            pkgs.vscode-extensions.ms-python.python
+                          ]
+                          ++ (
+                            if framework == "vite" then
+                              [ pkgs.vscode-extensions.vue.volar ]
+                            else if framework == "astro" || framework == "astro-node" then
+                              [ pkgs.vscode-extensions.astro-build.astro-vscode ]
+                            else
+                              [ ]
+                          );
+                      })
+                    ]
+                    ++ (
+                      if type == "npm" then
+                        [ pkgs.nodejs ]
+                      else if type == "yarn" then
+                        [ pkgs.yarn ]
+                      else if type == "pnpm" then
+                        [ pkgs.pnpm ]
+                      else if type == "bun" then
+                        [ pkgs.bun ]
+                      else
+                        [ ]
+                    );
+                  shellHook = ''
+                    code .
+                  '';
+                };
+              };
+            in
+            pkgs.mkShell (
+              mergeValues {
+                prev = resolved.stepArgs.shell;
+                next = resolved.genericArgs;
+                extendLists = true;
+              }
+            );
         in
         (
           if implementation == "buildNpmPackage" then
             let
-              pname = name;
-            in
-            {
-              # TODO check
-
-              package = pkgs.buildNpmPackage (
-                {
-                  inherit pname version src;
+              resolved = resolve "package" {
+                buildNpmPackage = {
+                  pname = name;
+                  inherit version src;
                   meta = {
                     mainProgram = name;
                   };
+                  installPhase = ''
+                    runHook preInstall
+
+                    mkdir -p $out/{share,bin}
+                    ${builtins.concatStringsSep "\n" (
+                      builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
+                    )}
+                    cat > $out/bin/${name} << EOF
+                    #!${pkgs.lib.getExe pkgs.bash}
+                    ${(installArgs.execute or (args: "")) {
+                      node =
+                        if type == "npm" then
+                          pkgs.lib.getExe pkgs.nodejs
+                        else if type == "yarn" then
+                          pkgs.lib.getExe pkgs.yarn
+                        else if type == "pnpm" then
+                          pkgs.lib.getExe pkgs.pnpm
+                        else if type == "bun" then
+                          pkgs.lib.getExe pkgs.bun
+                        else
+                          "";
+                      npm =
+                        if type == "npm" then
+                          pkgs.lib.getExe' pkgs.nodejs "npm"
+                        else if type == "yarn" then
+                          pkgs.lib.getExe pkgs.yarn
+                        else if type == "pnpm" then
+                          pkgs.lib.getExe pkgs.pnpm
+                        else if type == "bun" then
+                          pkgs.lib.getExe pkgs.bun
+                        else
+                          "";
+                      dir = "$out/share";
+                    }}
+                    EOF
+                    chmod +x $out/bin/${name}
+                    ${installArgs.commands or ""}
+                    ${installArgs.extraCommands or ""}
+
+                    runHook postInstall
+                  '';
                 }
                 // (
                   if type == "npm" then
                     {
                       npmDeps = pkgs.importNpmLock {
-                        inherit pname version;
+                        pname = name;
+                        inherit version;
                         npmRoot = src;
                       };
                       npmConfigHook = pkgs.importNpmLock.npmConfigHook;
                     }
                   else
                     { }
-                )
-                // (
-                  let
-                    node =
-                      if type == "npm" then
-                        pkgs.lib.getExe pkgs.nodejs
-                      else if type == "yarn" then
-                        pkgs.lib.getExe pkgs.yarn
-                      else if type == "pnpm" then
-                        pkgs.lib.getExe pkgs.pnpm
-                      else if type == "bun" then
-                        pkgs.lib.getExe pkgs.bun
-                      else
-                        "";
-                    npm =
-                      if type == "npm" then
-                        pkgs.lib.getExe' pkgs.nodejs "npm"
-                      else if type == "yarn" then
-                        pkgs.lib.getExe pkgs.yarn
-                      else if type == "pnpm" then
-                        pkgs.lib.getExe pkgs.pnpm
-                      else if type == "bun" then
-                        pkgs.lib.getExe pkgs.bun
-                      else
-                        "";
-
-                    installArgs =
-                      (
-                        if framework == "nextjs" then
-                          {
-                            copy = [
-                              ".next"
-                              "public"
-                              "node_modules"
-                              "package.json"
-                            ];
-                            execute = args: "cd ${args.dir} && ${args.npm} run start";
-                            commands = ''
-                              # https://github.com/vercel/next.js/discussions/58864
-                              ln -s /var/cache/${name} $out/share/.next/cache
-                            '';
-                          }
-                        else if framework == "vite" || framework == "astro" then
-                          {
-                            copy = [ "dist" ];
-                            execute = args: "${pkgs.lib.getExe pkgs.static-web-server} --port 3000 --root ${args.dir}/dist";
-                          }
-                        else if framework == "react" then
-                          {
-                            copy = [ "build" ];
-                            execute = args: "${pkgs.lib.getExe pkgs.static-web-server} --port 3000 --root ${args.dir}/build";
-                          }
-                        else if framework == "nextjs-standalone" then
-                          {
-                            copy = [
-                              ".next"
-                              "public"
-                            ];
-                            execute = args: "${args.node} ${args.dir}/server.js";
-                            commands = ''
-                              # https://github.com/vercel/next.js/discussions/58864
-                              ln -s /var/cache/${name} $out/share/.next/cache
-                              mv $out/share/.next/standalone/* $out/share
-                            '';
-                          }
-                        else if framework == "astro-node" then
-                          {
-                            copy = [
-                              "dist"
-                              "node_modules"
-                            ];
-                            execute = args: "${args.node} ${args.dir}/dist/server/entry.mjs";
-                          }
-                        else if framework == "astro-node-noext" then
-                          {
-                            copy = [ "dist" ];
-                            execute = args: "${args.node} ${args.dir}/dist/server/entry.mjs";
-                          }
-                        else
-                          { }
-                      )
-                      // (args.frameworkArgs or { });
-                  in
-                  {
-                    installPhase = ''
-                      runHook preInstall
-
-                      mkdir -p $out/{share,bin}
-                      ${builtins.concatStringsSep "\n" (
-                        builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
-                      )}
-                      cat > $out/bin/${name} << EOF
-                      #!${pkgs.lib.getExe pkgs.bash}
-                      ${(installArgs.execute or (args: "")) {
-                        inherit node npm;
-                        dir = "$out/share";
-                      }}
-                      EOF
-                      chmod +x $out/bin/${name}
-                      ${installArgs.commands or ""}
-                      ${installArgs.extraCommands or ""}
-
-                      runHook postInstall
-                    '';
-                  }
-                )
-                // extraPackageArgs
+                );
+              };
+            in
+            {
+              package = pkgs.buildNpmPackage (
+                mergeValues {
+                  prev = resolved.stepArgs.buildNpmPackage;
+                  next = resolved.genericArgs;
+                  extendLists = true;
+                }
               );
             }
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // {
-          devShell = pkgs.mkShell (
-            {
-              buildInputs =
-                (defaultDevShellBuildInputs { inherit pkgs; })
-                ++ [
-                  pkgs.python
-
-                  (pkgs.vscode-with-extensions.override {
-                    vscode = pkgs.vscode;
-                    vscodeExtensions =
-                      (defaultVsCodeExtensions { inherit pkgs; })
-                      ++ [
-                        pkgs.vscode-extensions.ms-python.python
-                      ]
-                      ++ (
-                        if framework == "vite" then
-                          [ pkgs.vscode-extensions.vue.volar ]
-                        else if framework == "astro" || framework == "astro-node" then
-                          [ pkgs.vscode-extensions.astro-build.astro-vscode ]
-                        else
-                          [ ]
-                      );
-                  })
-                ]
-                ++ (
-                  if type == "npm" then
-                    [ pkgs.nodejs ]
-                  else if type == "yarn" then
-                    [ pkgs.yarn ]
-                  else if type == "pnpm" then
-                    [ pkgs.pnpm ]
-                  else if type == "bun" then
-                    [ pkgs.bun ]
-                  else
-                    [ ]
-                );
-              shellHook = ''
-                code .
-              '';
-            }
-            // extraDevShellArgs
-          );
-        };
-    in
-    {
-      combine = combine;
-
+        // { inherit devShell; };
       language =
         let
           rust = outputBuilder {
             appBuilder = rustApp;
             appProcess =
               app:
-              (
-                if app ? src then
-                  let
-                    metadata = builtins.fromTOML (builtins.readFile (app.src + "/Cargo.toml"));
-                  in
-                  {
-                    name = metadata.package.name;
-                    version = metadata.package.version;
-                  }
-                else
-                  {
-                    name = "rust-app";
-                    version = "1.0.0";
-                  }
-              )
-              // app;
+              let
+                metadata =
+                  if app ? src then
+                    builtins.fromTOML (builtins.readFile (app.src + "/Cargo.toml"))
+                  else
+                    { };
+                processed = {
+                  name = metadata.package.name or "rust-app";
+                  version = metadata.package.version or "1.0.0";
+                }
+                // app;
+              in
+              processed // { crateName = processed.crateName or processed.name; };
           };
           python = outputBuilder {
             appBuilder = pythonApp;
             appProcess =
               app:
-              (
-                if app ? src then
-                  let
-                    metadata = builtins.fromTOML (builtins.readFile (app.src + "/pyproject.toml"));
-                  in
-                  {
-                    name = metadata.project.name;
-                    version = metadata.project.version;
-                  }
-                else
-                  {
-                    name = "python-app";
-                    version = "1.0.0";
-                  }
-              )
-              // app;
+              let
+                metadata =
+                  if app ? src then
+                    builtins.fromTOML (builtins.readFile (app.src + "/pyproject.toml"))
+                  else
+                    { };
+                processed = {
+                  name = metadata.project.name or "python-app";
+                  version = metadata.project.version or "1.0.0";
+                }
+                // app;
+              in
+              processed;
           };
           go = outputBuilder {
             appBuilder = goApp;
@@ -892,22 +1353,19 @@
             appBuilder = javascriptApp;
             appProcess =
               app:
-              (
-                if app ? src then
-                  let
-                    metadata = builtins.fromJSON (builtins.readFile (app.src + "/package.json"));
-                  in
-                  {
-                    name = metadata.name;
-                    version = metadata.version;
-                  }
-                else
-                  {
-                    name = "javascript-app";
-                    version = "1.0.0";
-                  }
-              )
-              // app;
+              let
+                metadata =
+                  if app ? src then
+                    builtins.fromJSON (builtins.readFile (app.src + "/package.json"))
+                  else
+                    { };
+                processed = {
+                  name = metadata.name or "javascript-app";
+                  version = metadata.version or "1.0.0";
+                }
+                // app;
+              in
+              processed;
           };
         in
         {
@@ -931,35 +1389,266 @@
             else
               builtins.throw "Could not detect language";
         };
+    in
+    {
+      inherit language;
+
+      combine = combine;
 
       templates = {
         rust = {
+          description = "A Rust application built with Cargo.";
           path = ./templates/rust/hello-world;
         };
         poetry = {
+          description = "A Python application built with Poetry.";
           path = ./templates/python/poetry;
         };
         uv = {
+          description = "A Python application built with uv.";
           path = ./templates/python/uv;
         };
         go = {
+          description = "A Go application with dependencies.";
           path = ./templates/go/dependency;
         };
         nodejs = {
+          description = "A Node.js application.";
           path = ./templates/javascript/nodejs;
         };
         nextjs = {
+          description = "A Next.js application.";
           path = ./templates/javascript/nextjs;
         };
         vite = {
+          description = "A Vite application.";
           path = ./templates/javascript/vite;
         };
         astro = {
+          description = "An Astro application.";
           path = ./templates/javascript/astro;
         };
         react = {
+          description = "A React application.";
           path = ./templates/javascript/react;
         };
       };
+
+      # ==================================================================
+      # Tests
+      # ==================================================================
+      #
+      # The tests assert the behavior of the override system and of the
+      # custom outputs. They never build the app, they only inspect the
+      # evaluated outputs. Every assertion is turned into a derivation that
+      # fails when the condition does not hold.
+      checks =
+        eachSystemBySystem { } (
+          {
+            system,
+            pkgs,
+          }:
+          let
+            assertions =
+              lib.mapAttrs (
+                name:
+                condition:
+                pkgs.runCommand "xnode-builders-test-${name}" { } (
+                  if condition then
+                    ''
+                      echo "Test passed: ${name}"
+                      touch $out
+                    ''
+                  else
+                    ''
+                      echo "Test failed: ${name}" >&2
+                      exit 1
+                    ''
+                )
+              );
+
+            # The names of the build inputs of a derivation.
+            inputNames =
+              derivation:
+              map (input: input.pname or input.name or "?") (derivation.drvAttrs.buildInputs or [ ]);
+
+            # The app with an override tree that covers every layer.
+            overridden =
+              language.rust {
+                src = ./tests/rust;
+                implementation = "buildRustPackage";
+                override =
+                  {
+                    pkgs,
+                    ...
+                  }:
+                  {
+                    # A generic argument for every scope and implementation.
+                    common.common.buildInputs = [ pkgs.hello ];
+                    # An argument of a build step for every scope.
+                    common.buildRustPackage.buildPackage.cargoBuildFlags = [ "--locked" ];
+                    # A generic argument for the package scope.
+                    package.common.buildInputs = prev: prev ++ [ pkgs.cowsay ];
+                    # An argument of a build step for the package scope.
+                    package.buildRustPackage.buildPackage.buildInputs = [ pkgs.coreutils ];
+                    # An argument of a build step for the check scope.
+                    check.buildRustPackage.buildPackage.doCheck = true;
+                    # An argument of the development shell.
+                    devshell.common.shell.buildInputs = prev: prev ++ [ pkgs.gnugrep ];
+                  };
+              };
+
+            package = overridden.packages.${system}.test-app;
+            check = overridden.checks.${system}.test-app;
+            shell = overridden.devShells.${system}.test-app;
+
+            # The app with custom outputs.
+            withOutputs =
+              language.rust {
+                src = ./tests/rust;
+                implementation = "buildRustPackage";
+                outputs = {
+                  # A custom output that only adds a check.
+                  extra-check =
+                    {
+                      pkgs,
+                      ...
+                    }:
+                    {
+                      check = pkgs.runCommand "extra-check" { } ''
+                        touch $out
+                      '';
+                    };
+
+                  # A custom output that only adds a package. It receives
+                  # the package of the app.
+                  extra-package =
+                    {
+                      pkgs,
+                      package,
+                      ...
+                    }:
+                    pkgs.runCommand "extra-package" { inherit package; } ''
+                      touch $out
+                    '';
+
+                  # A custom output that adds a check and a package.
+                  both =
+                    {
+                      pkgs,
+                      ...
+                    }:
+                    {
+                      check = pkgs.runCommand "both-check" { } ''
+                        touch $out
+                      '';
+                      package = pkgs.runCommand "both-package" { } ''
+                        touch $out
+                      '';
+                    };
+                };
+              };
+
+            # The app of the crate2nix implementation. The Cargo.nix file of
+            # the application is generated with an import from derivation,
+            # which is only possible on the system of the machine that builds
+            # the derivations. The current system is only known in impure
+            # mode, so these tests are only run with `nix flake check
+            # --impure`.
+            crate2nix =
+              if builtins ? currentSystem && system == builtins.currentSystem then
+                language.rust {
+                  src = ./tests/rust;
+                  implementation = "crate2nix";
+                  override = {
+                    # A generic argument for every scope and implementation.
+                    common.common.buildInputs = [ pkgs.hello ];
+                    # An argument of the build step of the crate2nix
+                    # implementation.
+                    package.crate2nix.build.features = [ "default" ];
+                    # An argument that the build step does not accept, it is
+                    # applied to the crate of the application.
+                    package.crate2nix.build.buildInputs = [ pkgs.coreutils ];
+                    # An argument of the tests of the crate2nix
+                    # implementation.
+                    check.crate2nix.build.testInputs = [ pkgs.coreutils ];
+                  };
+                }
+              else
+                null;
+          in
+          assertions (
+            {
+            # The generic argument of `common.common` is applied to every
+            # scope.
+            "generic-argument-common" = inputNames package == [
+              "coreutils"
+              "hello"
+              "cowsay"
+            ];
+
+            # The generic argument of the package scope is not applied to the
+            # check scope.
+            "generic-argument-scope" = inputNames check == [ "hello" ];
+
+            # The argument of the build step is applied to every scope.
+            "step-argument-common" =
+              package.drvAttrs.cargoBuildFlags == [ "--locked" ]
+              && check.drvAttrs.cargoBuildFlags == [ "--locked" ];
+
+            # The argument of the build step of the check scope is only
+            # applied to the check scope.
+            "step-argument-scope" =
+              check.drvAttrs.doCheck == true
+              && package.drvAttrs.doCheck == false;
+
+            # The development shell keeps its default inputs and gets the
+            # additional ones.
+            "devshell-argument" =
+              builtins.elem "gnugrep" (map (input: input.pname or input.name or "?") shell.buildInputs)
+              && builtins.elem "cargo" (map (input: input.pname or input.name or "?") shell.buildInputs)
+              && builtins.elem "hello" (map (input: input.pname or input.name or "?") shell.buildInputs);
+
+            # The custom outputs are exposed as checks and packages.
+            "custom-output-check" =
+              builtins.hasAttr "test-app-extra-check" withOutputs.checks.${system}
+              && !(builtins.hasAttr "test-app-extra-check" withOutputs.packages.${system});
+            "custom-output-package" =
+              builtins.hasAttr "test-app-extra-package" withOutputs.packages.${system}
+              && !(builtins.hasAttr "test-app-extra-package" withOutputs.checks.${system});
+            "custom-output-both-check" = builtins.hasAttr "test-app-both" withOutputs.checks.${system};
+            "custom-output-both-package" = builtins.hasAttr "test-app-both" withOutputs.packages.${system};
+
+            # The custom output receives the package of the app.
+            "custom-output-arguments" =
+              withOutputs.packages.${system}.test-app-extra-package.drvAttrs.package.drvAttrs.name
+              == withOutputs.packages.${system}.test-app.drvAttrs.name;
+            }
+            // (
+              if crate2nix == null then
+                { }
+              else
+                {
+                  # The arguments of the build step of the crate2nix
+                  # implementation are applied to the crate.
+                  "crate2nix-step-argument" =
+                    crate2nix.packages.${system}.test-app.drvAttrs.crateFeatures == [ "default" ];
+
+                  # The generic arguments are applied to the crate of the
+                  # application.
+                  "crate2nix-generic-argument" =
+                    inputNames crate2nix.packages.${system}.test-app == [
+                      "hello"
+                      "coreutils"
+                    ];
+
+                  # The arguments of the tests are applied to the crate of the
+                  # tests.
+                  "crate2nix-test-argument" =
+                    inputNames crate2nix.checks.${system}.test-app.passthru.test == [ "coreutils" ];
+                }
+            )
+          )
+        );
     };
 }
