@@ -499,18 +499,27 @@
             }:
             let
               appArgs = (app.getArgs or (_: { })) { inherit pkgs; };
-              output = args.appBuilder {
-                inherit
-                  system
-                  pkgs
-                  app
-                  appArgs
-                  ;
+              appArgs' = appArgs // {
+                override = appArgs.override or { };
+                env = appArgs.env or { };
               };
-              src = if app ? src then app.src else (appArgs.src or null);
+              appArgs'' =
+                appArgs'
+                // {
+                  override =
+                    if builtins.isFunction appArgs'.override then
+                      appArgs'.override { inherit pkgs; }
+                    else
+                      appArgs'.override;
+                };
+              output = args.appBuilder {
+                inherit system pkgs app;
+                appArgs = appArgs'';
+              };
+              src = if app ? src then app.src else (appArgs''.src or null);
 
               # Environment variables to set on the wrapped binaries.
-              env = app.env or { };
+              env = appArgs''.env or { };
 
               wrappedPackage =
                 output.package.overrideAttrs (
@@ -626,7 +635,7 @@
           src = if app ? src then app.src else (appArgs.src or null);
           override =
             let
-              raw = app.override or { };
+              raw = appArgs.override or { };
             in
             if builtins.isFunction raw then raw { inherit pkgs; } else raw;
           craneLib = inputs.crane.mkLib pkgs;
@@ -888,7 +897,7 @@
           implementation = app.implementation or (if type == "uv" then "uv2nix" else "pyproject.nix");
           override =
             let
-              raw = app.override or { };
+              raw = appArgs.override or { };
             in
             if builtins.isFunction raw then raw { inherit pkgs; } else raw;
           python = appArgs.python or pkgs.python3;
@@ -1103,8 +1112,6 @@
                   ;
                 pythonSet = pythonPackage.pythonSet;
                 venv = pythonPackage.venv;
-                # Backwards-compatible alias for `appArgs`.
-                args = appArgs;
               };
             }
           else
@@ -1184,7 +1191,7 @@
           implementation = app.implementation or "buildGoModule";
           override =
             let
-              raw = app.override or { };
+              raw = appArgs.override or { };
             in
             if builtins.isFunction raw then raw { inherit pkgs; } else raw;
 
@@ -1350,7 +1357,7 @@
             );
           override =
             let
-              raw = app.override or { };
+              raw = appArgs.override or { };
             in
             if builtins.isFunction raw then raw { inherit pkgs; } else raw;
 

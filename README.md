@@ -52,6 +52,7 @@ The application is described by an attribute set. The most important attributes 
 | `outputs`      | Additional checks and packages, see [Custom outputs](#custom-outputs).                   |
 | `getArgs`      | Language specific arguments, see [Language specific arguments](#language-specific-arguments). |
 | `update`       | Update script exposed as `packages.<system>.<name>.passthru.update`. See [Updating dependencies](#updating-dependencies). |
+| `formatter`    | Formatter exposed as `formatter.<system>.<name>`. |
 
 The `implementation` selects the builder of the language of the application:
 
@@ -256,6 +257,11 @@ supported lock file), only `nix flake update` is run.
 The script can also be run from another directory by passing it as the first
 argument.
 
+### Formatting
+
+Every application builder exposes a formatter as `formatter.<system>.<name>`.
+Run it with `nix fmt .#<name>` or `nix fmt` if set as the default formatter.
+
 ### Custom outputs
 
 Additional checks and packages can be added with the `outputs` attribute. Every
@@ -320,7 +326,8 @@ a package. They are exposed as `checks.<system>.<name>-<output>` and
 ### Language specific arguments
 
 The `getArgs` attribute is a function of the packages that returns the
-arguments of the language of the application:
+arguments of the language of the application. The result can include
+`override`, `env`, and language-specific arguments:
 
 | Language   | Arguments                                                                        |
 | ---------- | -------------------------------------------------------------------------------- |
