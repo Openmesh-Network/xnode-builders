@@ -51,7 +51,7 @@ The application is described by an attribute set. The most important attributes 
 | `override`     | The overrides of the build arguments, see [Overriding build arguments](#overriding-build-arguments). |
 | `outputs`      | Additional checks and packages, see [Custom outputs](#custom-outputs).                   |
 | `getArgs`      | Language specific arguments, see [Language specific arguments](#language-specific-arguments). |
-| `update`       | Update script exposed as `packages.<system>.<name>-update`. See [Updating dependencies](#updating-dependencies). |
+| `update`       | Update script exposed as `packages.<system>.<name>.passthru.update`. See [Updating dependencies](#updating-dependencies). |
 
 The `implementation` selects the builder of the language of the application:
 
@@ -239,10 +239,10 @@ override =
 
 Every application builder exposes an update script that updates the
 dependency lock files of the application and the inputs of the flake. It is
-exposed as `packages.<system>.<name>-update`:
+exposed as `packages.<system>.<name>.passthru.update`:
 
 ```sh
-nix run .#<name>-update
+nix run .#<name>.passthru.update
 ```
 
 The script runs the language-specific update command followed by `nix flake

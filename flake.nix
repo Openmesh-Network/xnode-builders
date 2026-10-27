@@ -178,19 +178,14 @@
                 inherit extendLists;
               }
             else if builtins.isFunction value && (builtins.elem key mergeableKeys) then
-              (
-                if builtins.hasAttr key prev then
-                  value previous
-                else
-                  value [ ]
-              )
+              (if builtins.hasAttr key prev then value previous else value [ ])
             else if extendLists && builtins.isList previous && builtins.isList value then
               previous ++ value
             else
               value;
-          shared = builtins.filter (
-            key: builtins.hasAttr key prev && builtins.hasAttr key next
-          ) (builtins.attrNames next);
+          shared = builtins.filter (key: builtins.hasAttr key prev && builtins.hasAttr key next) (
+            builtins.attrNames next
+          );
         in
         prev
         // next
@@ -232,7 +227,9 @@
         crane = { };
         buildRustPackage = { };
         "pyproject.nix" = { };
-        uv2nix = { override = "pythonSet"; };
+        uv2nix = {
+          override = "pythonSet";
+        };
         buildGoModule = { };
         buildNpmPackage = { };
       };
@@ -244,10 +241,7 @@
       # implementation.
       scopeSteps =
         scope: implementation:
-        if scope == "devshell" then
-          commonSteps
-        else
-          implementationSteps.${implementation} or [ ];
+        if scope == "devshell" then commonSteps else implementationSteps.${implementation} or [ ];
 
       # Resolve the override tree of a scope for an implementation.
       #
@@ -273,15 +267,13 @@
           isStep = slot: builtins.elem slot knownSteps;
           isSpecial = slot: builtins.hasAttr slot specialArgs;
           fold =
-            acc:
-            layer:
+            acc: layer:
             let
               stepSlots = lib.filterAttrs (slot: _: isStep slot) layer;
               specialSlots = lib.filterAttrs (slot: _: isSpecial slot) layer;
               genericSlots = lib.filterAttrs (slot: _: !(isStep slot) && !(isSpecial slot)) layer;
               mergeStep =
-                step:
-                previous:
+                step: previous:
                 let
                   special = lib.filterAttrs (slot: target: target == step) specialSlots;
                 in
@@ -351,8 +343,7 @@
               toNixOptions opt
           );
           toNixConfig =
-            options:
-            config:
+            options: config:
             builtins.concatMap (
               optName:
               let
@@ -509,55 +500,90 @@
             let
               appArgs = (app.getArgs or (_: { })) { inherit pkgs; };
               output = args.appBuilder {
-                inherit system pkgs app appArgs;
+                inherit
+                  system
+                  pkgs
+                  app
+                  appArgs
+                  ;
               };
               src = if app ? src then app.src else (appArgs.src or null);
-              custom =
-                lib.mapAttrs (
-                  key: builder:
-                  let
-                    result = builder {
-                      inherit pkgs system app appArgs src;
-                      package = output.package;
-                      check = output.check or null;
-                    };
-                  in
-                  # A derivation is a package, an attribute set with a
-                  # `check` and/or a `package` attribute defines both of
-                  # them separately.
-                  if isDerivation result then
-                    { package = result; }
-                  else if builtins.isAttrs result && (result ? package || result ? check) then
-                    result
-                  else
-                    { package = result; }
-                ) customOutputs;
+
+              # Environment variables to set on the wrapped binaries.
+              env = app.env or { };
+
+              wrappedPackage =
+                output.package.overrideAttrs (
+                  old:
+                  {
+                    passthru = (old.passthru or { }) // (lib.optionalAttrs (output ? extra) output.extra) // (lib.optionalAttrs (output ? update)  { inherit (output) update; });
+                    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ (lib.optionals (env != { }) [ pkgs.makeWrapper ]);
+                    postFixup = (old.postFixup or "") + (lib.optionalString (env != { }) ("\n" + ''
+                      if [ -d "$out/bin" ]; then
+                        for bin in "$out/bin"/*; do
+                          [ -e "$bin" ] || continue
+                          if [ -L "$bin" ]; then
+                            target="$(readlink -f "$bin")"
+                            rm "$bin"
+                            cp -L "$target" "$bin"
+                            chmod +w "$bin"
+                          fi
+                          [ -f "$bin" ] && [ -x "$bin" ] || continue
+                          wrapProgram "$bin" \
+                            ${lib.concatStringsSep " " (
+                              lib.mapAttrsToList (
+                                key: value:
+                                "--set ${lib.escapeShellArg key} ${lib.escapeShellArg (toString value)}"
+                              ) env
+                            )}
+                        done
+                      fi
+                    ''));
+                  });
+              output' = output // { package = wrappedPackage; };
+              custom = lib.mapAttrs (
+                key: builder:
+                let
+                  result = builder {
+                    inherit
+                      pkgs
+                      system
+                      app
+                      appArgs
+                      src
+                      ;
+                    package = output'.package;
+                    check = output'.check or null;
+                  };
+                in
+                # A derivation is a package, an attribute set with a
+                # `check` and/or a `package` attribute defines both of
+                # them separately.
+                if isDerivation result then
+                  { package = result; }
+                else if builtins.isAttrs result && (result ? package || result ? check) then
+                  result
+                else
+                  { package = result; }
+              ) customOutputs;
               customChecks = lib.filterAttrs (_: value: value ? check) custom;
               customPackages = lib.filterAttrs (_: value: value ? package) custom;
             in
             {
               checks.${system} =
-                (if output ? check then { ${name} = output.check; } else { })
-                // lib.mapAttrs' (
-                  key: value: lib.nameValuePair "${name}-${key}" value.check
-                ) customChecks;
+                (if output' ? check then { ${name} = output'.check; } else { })
+                // lib.mapAttrs' (key: value: lib.nameValuePair "${name}-${key}" value.check) customChecks;
 
-              packages.${system} =
-                {
-                  ${name} = output.package;
-                }
-                // lib.mapAttrs' (
-                  key: value: lib.nameValuePair "${name}-${key}" value.package
-                ) customPackages
-                // (if output ? update then { "${name}-update" = output.update; } else { })
-                // (if default then { default = output.package; } else { });
+              packages.${system} = {
+                ${name} = output'.package;
+              }
+              // lib.mapAttrs' (key: value: lib.nameValuePair "${name}-${key}" value.package) customPackages
+              // (if default then { default = output'.package; } else { });
 
               devShells.${system} = {
-                ${name} = output.devShell;
+                ${name} = output'.devShell;
               }
-              // (if default then { default = output.devShell; } else { });
-
-              extras.${system} = { } // (if output ? extra then output.extra else { });
+              // (if default then { default = output'.devShell; } else { });
             }
           ))
           (
@@ -603,10 +629,14 @@
           craneLib = inputs.crane.mkLib pkgs;
 
           resolve =
-            scope:
-            defaults:
+            scope: defaults:
             resolveOverrides {
-              inherit override scope implementation defaults;
+              inherit
+                override
+                scope
+                implementation
+                defaults
+                ;
               specialArgs = implementationSpecialArgs.${implementation} or { };
             };
 
@@ -634,9 +664,7 @@
               # arguments.
               generic = mergeValues {
                 prev = resolved.genericArgs;
-                next = lib.filterAttrs (
-                  key: _: !(builtins.elem key crate2nixArgs) && key != "crateOverrides"
-                ) args;
+                next = lib.filterAttrs (key: _: !(builtins.elem key crate2nixArgs) && key != "crateOverrides") args;
                 extendLists = true;
               };
               userOverrides = args.crateOverrides or { };
@@ -646,7 +674,8 @@
                 if generic == { } then
                   (if userOverrides == { } then { } else combined)
                 else
-                  combined // {
+                  combined
+                  // {
                     ${crateName} =
                       attrs:
                       mergeValues {
@@ -710,13 +739,11 @@
                 };
               };
             in
-            rustPlatform.buildRustPackage (
-              mergeValues {
-                prev = resolved.stepArgs.buildPackage;
-                next = resolved.genericArgs;
-                extendLists = true;
-              }
-            );
+            rustPlatform.buildRustPackage (mergeValues {
+              prev = resolved.stepArgs.buildPackage;
+              next = resolved.genericArgs;
+              extendLists = true;
+            });
 
           devShell =
             let
@@ -743,22 +770,19 @@
                 };
               };
             in
-            pkgs.mkShell (
-              mergeValues {
-                prev = resolved.stepArgs.shell;
-                next = resolved.genericArgs;
-                extendLists = true;
-              }
-            );
+            pkgs.mkShell (mergeValues {
+              prev = resolved.stepArgs.shell;
+              next = resolved.genericArgs;
+              extendLists = true;
+            });
         in
         (
           if implementation == "crate2nix" then
             let
-              build = (
-                inputs.crate2nix.tools.${system}.appliedCargoNix {
+              build =
+                (inputs.crate2nix.tools.${system}.appliedCargoNix {
                   inherit name src;
-                }
-              ).rootCrate.build;
+                }).rootCrate.build;
             in
             {
               check = build.override (crate2nixBuild "check");
@@ -773,18 +797,55 @@
               check = naersk'.buildPackage (naerskBuild "check");
 
               package = naersk'.buildPackage (naerskBuild "package");
+              extra = {
+                inherit appArgs naersk';
+              };
             }
           else if implementation == "crane" then
+            let
+              craneBuildResult =
+                scope:
+                let
+                  resolved = resolve scope {
+                    buildPackage = {
+                      src = craneLib.cleanCargoSource src;
+                      strictDeps = true;
+                      doCheck = scope == "check";
+                    };
+                    buildDepsOnly = { };
+                  };
+                  packageArgs = mergeValues {
+                    prev = resolved.stepArgs.buildPackage;
+                    next = resolved.genericArgs;
+                    extendLists = true;
+                  };
+                  depsArgs = mergeValues {
+                    prev = packageArgs;
+                    next = resolved.stepArgs.buildDepsOnly;
+                  };
+                  cargoArtifacts = packageArgs.cargoArtifacts or (craneLib.buildDepsOnly depsArgs);
+                in
+                {
+                  args = packageArgs // { inherit cargoArtifacts; };
+                  inherit cargoArtifacts;
+                };
+            in
             {
-              check = craneLib.buildPackage (craneBuild "check");
-
-              package = craneLib.buildPackage (craneBuild "package");
+              check = craneLib.buildPackage (craneBuildResult "check").args;
+              package = craneLib.buildPackage (craneBuildResult "package").args;
+              extra = {
+                inherit appArgs craneLib;
+                cargoArtifacts = (craneBuildResult "package").cargoArtifacts;
+              };
             }
           else if implementation == "buildRustPackage" then
             {
               check = buildRustPackageBuild "check";
 
               package = buildRustPackageBuild "package";
+              extra = {
+                inherit appArgs;
+              };
             }
           else
             builtins.throw "Unknown implementation ${implementation}"
@@ -819,10 +880,14 @@
           python = appArgs.python or pkgs.python3;
 
           resolve =
-            scope:
-            defaults:
+            scope: defaults:
             resolveOverrides {
-              inherit override scope implementation defaults;
+              inherit
+                override
+                scope
+                implementation
+                defaults
+                ;
               specialArgs = implementationSpecialArgs.${implementation} or { };
             };
 
@@ -854,13 +919,11 @@
                 };
               };
             in
-            pkgs.mkShell (
-              mergeValues {
-                prev = resolved.stepArgs.shell;
-                next = resolved.genericArgs;
-                extendLists = true;
-              }
-            );
+            pkgs.mkShell (mergeValues {
+              prev = resolved.stepArgs.shell;
+              next = resolved.genericArgs;
+              extendLists = true;
+            });
         in
         (
           if implementation == "pyproject.nix" then
@@ -944,10 +1007,13 @@
             {
               check = buildPythonPackage' "check";
               package = buildPythonPackage' "package";
+              extra = {
+                inherit appArgs project;
+              };
             }
           else if implementation == "uv2nix" then
             let
-              workspace = inputs.uv2nix.lib.workspace.loadWorkspace ({ workspaceRoot = src; });
+              workspace = inputs.uv2nix.lib.workspace.loadWorkspace { workspaceRoot = src; };
               overlay = workspace.mkPyprojectOverlay {
                 sourcePreference = "wheel";
               };
@@ -992,22 +1058,18 @@
                     else
                       pythonSet.${name}.overrideAttrs (
                         old:
-                          lib.filterAttrs (key: _: builtins.hasAttr key generic) (
-                            mergeValues {
-                              prev = old;
-                              next = generic;
-                              extendLists = true;
-                            }
-                          )
+                        lib.filterAttrs (key: _: builtins.hasAttr key generic) (mergeValues {
+                          prev = old;
+                          next = generic;
+                          extendLists = true;
+                        })
                       );
-                  venv =
-                    (pythonSet.mkVirtualEnv "${name}-${version}-venv" workspace.deps.default).overrideAttrs (
-                      old: resolved.stepArgs.venv
-                    );
-                  application =
-                    (pkgs.callPackages inputs.pyproject-nix.build.util { }).mkApplication {
-                      inherit venv package;
-                    };
+                  venv = (pythonSet.mkVirtualEnv "${name}-${version}-venv" workspace.deps.default).overrideAttrs (
+                    old: resolved.stepArgs.venv
+                  );
+                  application = (pkgs.callPackages inputs.pyproject-nix.build.util { }).mkApplication {
+                    inherit venv package;
+                  };
                 in
                 {
                   inherit pythonSet venv package;
@@ -1077,10 +1139,14 @@
             if builtins.isFunction raw then raw { inherit pkgs; } else raw;
 
           resolve =
-            scope:
-            defaults:
+            scope: defaults:
             resolveOverrides {
-              inherit override scope implementation defaults;
+              inherit
+                override
+                scope
+                implementation
+                defaults
+                ;
               specialArgs = implementationSpecialArgs.${implementation} or { };
             };
 
@@ -1099,13 +1165,11 @@
                 };
               };
             in
-            pkgs.buildGoModule (
-              mergeValues {
-                prev = resolved.stepArgs.buildGoModule;
-                next = resolved.genericArgs;
-                extendLists = true;
-              }
-            );
+            pkgs.buildGoModule (mergeValues {
+              prev = resolved.stepArgs.buildGoModule;
+              next = resolved.genericArgs;
+              extendLists = true;
+            });
 
           devShell =
             let
@@ -1127,13 +1191,11 @@
                 };
               };
             in
-            pkgs.mkShell (
-              mergeValues {
-                prev = resolved.stepArgs.shell;
-                next = resolved.genericArgs;
-                extendLists = true;
-              }
-            );
+            pkgs.mkShell (mergeValues {
+              prev = resolved.stepArgs.shell;
+              next = resolved.genericArgs;
+              extendLists = true;
+            });
         in
         (
           if implementation == "buildGoModule" then
@@ -1189,9 +1251,6 @@
               { };
           # The command of the `test` script of the package, if it has one.
           testCommand =
-            let
-              test = packageJson.scripts.test or null;
-            in
             if type == "npm" then
               "npm run test"
             else if type == "yarn" then
@@ -1201,7 +1260,7 @@
             else if type == "bun" then
               "bun run test"
             else
-              "npm run test";
+              "";
           framework =
             app.framework or (
               if
@@ -1235,10 +1294,14 @@
             if builtins.isFunction raw then raw { inherit pkgs; } else raw;
 
           resolve =
-            scope:
-            defaults:
+            scope: defaults:
             resolveOverrides {
-              inherit override scope implementation defaults;
+              inherit
+                override
+                scope
+                implementation
+                defaults
+                ;
               specialArgs = implementationSpecialArgs.${implementation} or { };
             };
 
@@ -1343,13 +1406,11 @@
                 };
               };
             in
-            pkgs.mkShell (
-              mergeValues {
-                prev = resolved.stepArgs.shell;
-                next = resolved.genericArgs;
-                extendLists = true;
-              }
-            );
+            pkgs.mkShell (mergeValues {
+              prev = resolved.stepArgs.shell;
+              next = resolved.genericArgs;
+              extendLists = true;
+            });
         in
         (
           if implementation == "buildNpmPackage" then
@@ -1358,95 +1419,92 @@
                 scope:
                 let
                   resolved = resolve scope {
-                    buildNpmPackage =
-                      {
-                        pname = name;
-                        inherit version src;
-                        meta = {
-                          mainProgram = name;
-                        };
-                        doCheck = scope == "check" && packageJson.scripts ? test;
-                        installPhase = ''
-                          runHook preInstall
+                    buildNpmPackage = {
+                      pname = name;
+                      inherit version src;
+                      meta = {
+                        mainProgram = name;
+                      };
+                      doCheck = scope == "check" && packageJson.scripts ? test;
+                      installPhase = ''
+                        runHook preInstall
 
-                          mkdir -p $out/{share,bin}
-                          ${builtins.concatStringsSep "\n" (
-                            builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
-                          )}
-                          cat > $out/bin/${name} << EOF
-                          #!${pkgs.lib.getExe pkgs.bash}
-                          ${(installArgs.execute or (args: "")) {
-                            node =
-                              if type == "npm" then
-                                pkgs.lib.getExe pkgs.nodejs
-                              else if type == "yarn" then
-                                pkgs.lib.getExe pkgs.yarn
-                              else if type == "pnpm" then
-                                pkgs.lib.getExe pkgs.pnpm
-                              else if type == "bun" then
-                                pkgs.lib.getExe pkgs.bun
-                              else
-                                "";
-                            npm =
-                              if type == "npm" then
-                                pkgs.lib.getExe' pkgs.nodejs "npm"
-                              else if type == "yarn" then
-                                pkgs.lib.getExe pkgs.yarn
-                              else if type == "pnpm" then
-                                pkgs.lib.getExe pkgs.pnpm
-                              else if type == "bun" then
-                                pkgs.lib.getExe pkgs.bun
-                              else
-                                "";
-                            dir = "$out/share";
-                          }}
-                          EOF
-                          chmod +x $out/bin/${name}
-                          ${installArgs.commands or ""}
-                          ${installArgs.extraCommands or ""}
+                        mkdir -p $out/{share,bin}
+                        ${builtins.concatStringsSep "\n" (
+                          builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
+                        )}
+                        cat > $out/bin/${name} << EOF
+                        #!${pkgs.lib.getExe pkgs.bash}
+                        ${(installArgs.execute or (args: "")) {
+                          node =
+                            if type == "npm" then
+                              pkgs.lib.getExe pkgs.nodejs
+                            else if type == "yarn" then
+                              pkgs.lib.getExe pkgs.yarn
+                            else if type == "pnpm" then
+                              pkgs.lib.getExe pkgs.pnpm
+                            else if type == "bun" then
+                              pkgs.lib.getExe pkgs.bun
+                            else
+                              "";
+                          npm =
+                            if type == "npm" then
+                              pkgs.lib.getExe' pkgs.nodejs "npm"
+                            else if type == "yarn" then
+                              pkgs.lib.getExe pkgs.yarn
+                            else if type == "pnpm" then
+                              pkgs.lib.getExe pkgs.pnpm
+                            else if type == "bun" then
+                              pkgs.lib.getExe pkgs.bun
+                            else
+                              "";
+                          dir = "$out/share";
+                        }}
+                        EOF
+                        chmod +x $out/bin/${name}
+                        ${installArgs.commands or ""}
+                        ${installArgs.extraCommands or ""}
 
-                          runHook postInstall
-                        '';
-                      }
-                      // (
-                        if type == "npm" then
-                          {
-                            npmDeps = pkgs.importNpmLock {
-                              pname = name;
-                              inherit version;
-                              npmRoot = src;
-                            };
-                            npmConfigHook = pkgs.importNpmLock.npmConfigHook;
-                          }
-                        else
-                          { }
-                      )
-                      // (
-                        # `buildNpmPackage` does not run the tests of the
-                        # package, the check scope adds a check phase that
-                        # runs the `test` script of the package.
-                        if scope == "check" && packageJson.scripts ? test then
-                          {
-                            checkPhase = ''
-                              runHook preCheck
+                        runHook postInstall
+                      '';
+                    }
+                    // (
+                      if type == "npm" then
+                        {
+                          npmDeps = pkgs.importNpmLock {
+                            pname = name;
+                            inherit version;
+                            npmRoot = src;
+                          };
+                          npmConfigHook = pkgs.importNpmLock.npmConfigHook;
+                        }
+                      else
+                        { }
+                    )
+                    // (
+                      # `buildNpmPackage` does not run the tests of the
+                      # package, the check scope adds a check phase that
+                      # runs the `test` script of the package.
+                      if scope == "check" && packageJson.scripts ? test then
+                        {
+                          checkPhase = ''
+                            runHook preCheck
 
-                              ${testCommand}
+                            ${testCommand}
 
-                              runHook postCheck
-                            '';
-                          }
-                        else
-                          { }
-                      );
+                            runHook postCheck
+                          '';
+                        }
+                      else
+                        { }
+                    );
                   };
                 in
-                pkgs.buildNpmPackage (
-                  mergeValues {
-                    prev = resolved.stepArgs.buildNpmPackage;
-                    next = resolved.genericArgs;
-                    extendLists = true;
-                  }
-                );
+                pkgs.buildNpmPackage (mergeValues {
+                  prev = resolved.stepArgs.buildNpmPackage;
+                  next = resolved.genericArgs;
+                  extendLists = true;
+                });
             in
             {
               check = npmBuild "check";
@@ -1491,10 +1549,7 @@
               app:
               let
                 metadata =
-                  if app ? src then
-                    builtins.fromTOML (builtins.readFile (app.src + "/Cargo.toml"))
-                  else
-                    { };
+                  if app ? src then builtins.fromTOML (builtins.readFile (app.src + "/Cargo.toml")) else { };
                 processed = {
                   name = metadata.package.name or "rust-app";
                   version = metadata.package.version or "1.0.0";
@@ -1509,10 +1564,7 @@
               app:
               let
                 metadata =
-                  if app ? src then
-                    builtins.fromTOML (builtins.readFile (app.src + "/pyproject.toml"))
-                  else
-                    { };
+                  if app ? src then builtins.fromTOML (builtins.readFile (app.src + "/pyproject.toml")) else { };
                 processed = {
                   name = metadata.project.name or "python-app";
                   version = metadata.project.version or "1.0.0";
@@ -1537,10 +1589,7 @@
               app:
               let
                 metadata =
-                  if app ? src then
-                    builtins.fromJSON (builtins.readFile (app.src + "/package.json"))
-                  else
-                    { };
+                  if app ? src then builtins.fromJSON (builtins.readFile (app.src + "/package.json")) else { };
                 processed = {
                   name = metadata.name or "javascript-app";
                   version = metadata.version or "1.0.0";
@@ -1624,165 +1673,158 @@
       # custom outputs. They never build the app, they only inspect the
       # evaluated outputs. Every assertion is turned into a derivation that
       # fails when the condition does not hold.
-      checks =
-        eachSystemBySystem { } (
-          {
-            system,
-            pkgs,
-          }:
-          let
-            assertions =
-              lib.mapAttrs (
-                name:
-                condition:
-                pkgs.runCommand "xnode-builders-test-${name}" { } (
-                  if condition then
-                    ''
-                      echo "Test passed: ${name}"
-                      touch $out
-                    ''
-                  else
-                    ''
-                      echo "Test failed: ${name}" >&2
-                      exit 1
-                    ''
-                )
-              );
-
-            # The names of the build inputs of a derivation.
-            inputNames =
-              derivation:
-              map (input: input.pname or input.name or "?") (derivation.drvAttrs.buildInputs or [ ]);
-
-            # The app with an override tree that covers every layer.
-            overridden =
-              language.rust {
-                src = ./tests/rust;
-                implementation = "buildRustPackage";
-                override =
-                  {
-                    pkgs,
-                    ...
-                  }:
-                  {
-                    # A generic argument for every scope and implementation.
-                    common.common.buildInputs = [ pkgs.hello ];
-                    # An argument of a build step for every scope.
-                    common.buildRustPackage.buildPackage.cargoBuildFlags = [ "--locked" ];
-                    # A generic argument for the package scope.
-                    package.common.buildInputs = prev: prev ++ [ pkgs.cowsay ];
-                    # An argument of a build step for the package scope.
-                    package.buildRustPackage.buildPackage.buildInputs = [ pkgs.coreutils ];
-                    # An argument of a build step for the check scope.
-                    check.buildRustPackage.buildPackage.doCheck = true;
-                    # An argument of the development shell.
-                    devshell.common.shell.buildInputs = prev: prev ++ [ pkgs.gnugrep ];
-                  };
-              };
-
-            package = overridden.packages.${system}.test-app;
-            check = overridden.checks.${system}.test-app;
-            shell = overridden.devShells.${system}.test-app;
-
-            # The app with custom outputs.
-            withOutputs =
-              language.rust {
-                src = ./tests/rust;
-                implementation = "buildRustPackage";
-                outputs = {
-                  # A custom output that only adds a check.
-                  extra-check =
-                    {
-                      pkgs,
-                      ...
-                    }:
-                    {
-                      check = pkgs.runCommand "extra-check" { } ''
-                        touch $out
-                      '';
-                    };
-
-                  # A custom output that only adds a package. It receives
-                  # the package of the app.
-                  extra-package =
-                    {
-                      pkgs,
-                      package,
-                      ...
-                    }:
-                    pkgs.runCommand "extra-package" { inherit package; } ''
-                      touch $out
-                    '';
-
-                  # A custom output that adds a check and a package.
-                  both =
-                    {
-                      pkgs,
-                      ...
-                    }:
-                    {
-                      check = pkgs.runCommand "both-check" { } ''
-                        touch $out
-                      '';
-                      package = pkgs.runCommand "both-package" { } ''
-                        touch $out
-                      '';
-                    };
-                };
-              };
-
-            # The app of the crate2nix implementation. The Cargo.nix file of
-            # the application is generated with an import from derivation,
-            # which is only possible on the system of the machine that builds
-            # the derivations. The current system is only known in impure
-            # mode, so these tests are only run with `nix flake check
-            # --impure`.
-            crate2nix =
-              if builtins ? currentSystem && system == builtins.currentSystem then
-                language.rust {
-                  src = ./tests/rust;
-                  implementation = "crate2nix";
-                  override = {
-                    # A generic argument for every scope and implementation.
-                    common.common.buildInputs = [ pkgs.hello ];
-                    # An argument of the build step of the crate2nix
-                    # implementation.
-                    package.crate2nix.build.features = [ "default" ];
-                    # An argument that the build step does not accept, it is
-                    # applied to the crate of the application.
-                    package.crate2nix.build.buildInputs = [ pkgs.coreutils ];
-                    # An argument of the tests of the crate2nix
-                    # implementation.
-                    check.crate2nix.build.testInputs = [ pkgs.coreutils ];
-                  };
-                }
+      checks = eachSystemBySystem { } (
+        {
+          system,
+          pkgs,
+        }:
+        let
+          assertions = lib.mapAttrs (
+            name: condition:
+            pkgs.runCommand "xnode-builders-test-${name}" { } (
+              if condition then
+                ''
+                  echo "Test passed: ${name}"
+                  touch $out
+                ''
               else
-                null;
+                ''
+                  echo "Test failed: ${name}" >&2
+                  exit 1
+                ''
+            )
+          );
 
-            # The Python app of the `pyproject.nix` implementation. The
-            # check scope builds the package with its tests.
-            python =
-              language.python {
-                src = ./tests/python;
-                implementation = "pyproject.nix";
-              };
+          # The names of the build inputs of a derivation.
+          inputNames =
+            derivation: map (input: input.pname or input.name or "?") (derivation.drvAttrs.buildInputs or [ ]);
 
-            # The JavaScript app. The check scope runs the `test` script of
-            # the package.
-            javascript =
-              language.javascript {
-                src = ./tests/javascript;
+          # The app with an override tree that covers every layer.
+          overridden = language.rust {
+            src = ./tests/rust;
+            implementation = "buildRustPackage";
+            override =
+              {
+                pkgs,
+                ...
+              }:
+              {
+                # A generic argument for every scope and implementation.
+                common.common.buildInputs = [ pkgs.hello ];
+                # An argument of a build step for every scope.
+                common.buildRustPackage.buildPackage.cargoBuildFlags = [ "--locked" ];
+                # A generic argument for the package scope.
+                package.common.buildInputs = prev: prev ++ [ pkgs.cowsay ];
+                # An argument of a build step for the package scope.
+                package.buildRustPackage.buildPackage.buildInputs = [ pkgs.coreutils ];
+                # An argument of a build step for the check scope.
+                check.buildRustPackage.buildPackage.doCheck = true;
+                # An argument of the development shell.
+                devshell.common.shell.buildInputs = prev: prev ++ [ pkgs.gnugrep ];
               };
-          in
-          assertions (
-            {
+          };
+
+          package = overridden.packages.${system}.test-app;
+          check = overridden.checks.${system}.test-app;
+          shell = overridden.devShells.${system}.test-app;
+
+          # The app with custom outputs.
+          withOutputs = language.rust {
+            src = ./tests/rust;
+            implementation = "buildRustPackage";
+            outputs = {
+              # A custom output that only adds a check.
+              extra-check =
+                {
+                  pkgs,
+                  ...
+                }:
+                {
+                  check = pkgs.runCommand "extra-check" { } ''
+                    touch $out
+                  '';
+                };
+
+              # A custom output that only adds a package. It receives
+              # the package of the app.
+              extra-package =
+                {
+                  pkgs,
+                  package,
+                  ...
+                }:
+                pkgs.runCommand "extra-package" { inherit package; } ''
+                  touch $out
+                '';
+
+              # A custom output that adds a check and a package.
+              both =
+                {
+                  pkgs,
+                  ...
+                }:
+                {
+                  check = pkgs.runCommand "both-check" { } ''
+                    touch $out
+                  '';
+                  package = pkgs.runCommand "both-package" { } ''
+                    touch $out
+                  '';
+                };
+            };
+          };
+
+          # The app of the crate2nix implementation. The Cargo.nix file of
+          # the application is generated with an import from derivation,
+          # which is only possible on the system of the machine that builds
+          # the derivations. The current system is only known in impure
+          # mode, so these tests are only run with `nix flake check
+          # --impure`.
+          crate2nix =
+            if builtins ? currentSystem && system == builtins.currentSystem then
+              language.rust {
+                src = ./tests/rust;
+                implementation = "crate2nix";
+                override = {
+                  # A generic argument for every scope and implementation.
+                  common.common.buildInputs = [ pkgs.hello ];
+                  # An argument of the build step of the crate2nix
+                  # implementation.
+                  package.crate2nix.build.features = [ "default" ];
+                  # An argument that the build step does not accept, it is
+                  # applied to the crate of the application.
+                  package.crate2nix.build.buildInputs = [ pkgs.coreutils ];
+                  # An argument of the tests of the crate2nix
+                  # implementation.
+                  check.crate2nix.build.testInputs = [ pkgs.coreutils ];
+                };
+              }
+            else
+              null;
+
+          # The Python app of the `pyproject.nix` implementation. The
+          # check scope builds the package with its tests.
+          python = language.python {
+            src = ./tests/python;
+            implementation = "pyproject.nix";
+          };
+
+          # The JavaScript app. The check scope runs the `test` script of
+          # the package.
+          javascript = language.javascript {
+            src = ./tests/javascript;
+          };
+        in
+        assertions (
+          {
             # The generic argument of `common.common` is applied to every
             # scope.
-            "generic-argument-common" = inputNames package == [
-              "coreutils"
-              "hello"
-              "cowsay"
-            ];
+            "generic-argument-common" =
+              inputNames package == [
+                "coreutils"
+                "hello"
+                "cowsay"
+              ];
 
             # The generic argument of the package scope is not applied to the
             # check scope.
@@ -1795,9 +1837,7 @@
 
             # The argument of the build step of the check scope is only
             # applied to the check scope.
-            "step-argument-scope" =
-              check.drvAttrs.doCheck == true
-              && package.drvAttrs.doCheck == false;
+            "step-argument-scope" = check.drvAttrs.doCheck == true && package.drvAttrs.doCheck == false;
 
             # The development shell keeps its default inputs and gets the
             # additional ones.
@@ -1831,12 +1871,14 @@
             # hook to the build, the package scope does not.
             "python-check-inputs" =
               builtins.elem "pytest-check-hook" (
-                map (input: input.name or input.pname or "?")
-                  python.checks.${system}.test-app.drvAttrs.nativeBuildInputs
+                map (
+                  input: input.name or input.pname or "?"
+                ) python.checks.${system}.test-app.drvAttrs.nativeBuildInputs
               )
               && !(builtins.elem "pytest-check-hook" (
-                map (input: input.name or input.pname or "?")
-                  python.packages.${system}.test-app.drvAttrs.nativeBuildInputs
+                map (
+                  input: input.name or input.pname or "?"
+                ) python.packages.${system}.test-app.drvAttrs.nativeBuildInputs
               ));
 
             # The check scope of the JavaScript implementation runs the
@@ -1850,32 +1892,32 @@
             "javascript-check-phase" =
               javascript.checks.${system}.test-app.drvAttrs ? checkPhase
               && !(javascript.packages.${system}.test-app.drvAttrs ? checkPhase);
-            }
-            // (
-              if crate2nix == null then
-                { }
-              else
-                {
-                  # The arguments of the build step of the crate2nix
-                  # implementation are applied to the crate.
-                  "crate2nix-step-argument" =
-                    crate2nix.packages.${system}.test-app.drvAttrs.crateFeatures == [ "default" ];
+          }
+          // (
+            if crate2nix == null then
+              { }
+            else
+              {
+                # The arguments of the build step of the crate2nix
+                # implementation are applied to the crate.
+                "crate2nix-step-argument" =
+                  crate2nix.packages.${system}.test-app.drvAttrs.crateFeatures == [ "default" ];
 
-                  # The generic arguments are applied to the crate of the
-                  # application.
-                  "crate2nix-generic-argument" =
-                    inputNames crate2nix.packages.${system}.test-app == [
-                      "hello"
-                      "coreutils"
-                    ];
+                # The generic arguments are applied to the crate of the
+                # application.
+                "crate2nix-generic-argument" =
+                  inputNames crate2nix.packages.${system}.test-app == [
+                    "hello"
+                    "coreutils"
+                  ];
 
-                  # The arguments of the tests are applied to the crate of the
-                  # tests.
-                  "crate2nix-test-argument" =
-                    inputNames crate2nix.checks.${system}.test-app.passthru.test == [ "coreutils" ];
-                }
-            )
+                # The arguments of the tests are applied to the crate of the
+                # tests.
+                "crate2nix-test-argument" =
+                  inputNames crate2nix.checks.${system}.test-app.passthru.test == [ "coreutils" ];
+              }
           )
-        );
+        )
+      );
     };
 }
