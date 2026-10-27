@@ -516,7 +516,7 @@
                 output.package.overrideAttrs (
                   old:
                   {
-                    passthru = (old.passthru or { }) // (lib.optionalAttrs (output ? extra) output.extra) // (lib.optionalAttrs (output ? update)  { inherit (output) update; });
+                    passthru = (old.passthru or { }) // (lib.optionalAttrs (output ? extra) output.extra) // (lib.optionalAttrs (output ? update) { inherit (output) update; });
                     nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ (lib.optionals (env != { }) [ pkgs.makeWrapper ]);
                     postFixup = (old.postFixup or "") + (lib.optionalString (env != { }) ("\n" + ''
                       if [ -d "$out/bin" ]; then
@@ -579,6 +579,9 @@
               }
               // lib.mapAttrs' (key: value: lib.nameValuePair "${name}-${key}" value.package) customPackages
               // (if default then { default = output'.package; } else { });
+
+              formatter.${system} =
+                if output' ? formatter then { ${name} = output'.formatter; } else { };
 
               devShells.${system} = {
                 ${name} = output'.devShell;
@@ -857,6 +860,17 @@
             command = "cargo update";
             runtimeInputs = [ pkgs.cargo ];
           };
+          formatter =
+            pkgs.writeShellApplication {
+              name = "${name}-formatter";
+              runtimeInputs = [ pkgs.rustfmt pkgs.cargo ];
+              text = ''
+                if [ "$#" -gt 0 ]; then
+                  cd "$1"
+                fi
+                cargo fmt
+              '';
+            };
         };
 
       pythonApp =
@@ -1118,6 +1132,42 @@
               else
                 [ ];
           };
+          formatter =
+            if type == "uv" then
+              pkgs.writeShellApplication {
+                name = "${name}-formatter";
+                runtimeInputs = [ pkgs.ruff ];
+                text = ''
+                  if [ "$#" -gt 0 ]; then
+                    cd "$1"
+                  fi
+                  ruff format .
+                  ruff check --fix .
+                '';
+              }
+            else if type == "poetry" then
+              pkgs.writeShellApplication {
+                name = "${name}-formatter";
+                runtimeInputs = [ pkgs.black pkgs.isort ];
+                text = ''
+                  if [ "$#" -gt 0 ]; then
+                    cd "$1"
+                  fi
+                  black .
+                  isort .
+                '';
+              }
+            else
+              pkgs.writeShellApplication {
+                name = "${name}-formatter";
+                runtimeInputs = [ pkgs.black ];
+                text = ''
+                  if [ "$#" -gt 0 ]; then
+                    cd "$1"
+                  fi
+                  black .
+                '';
+              };
         };
 
       goApp =
@@ -1217,6 +1267,17 @@
             '';
             runtimeInputs = [ pkgs.go ];
           };
+          formatter =
+            pkgs.writeShellApplication {
+              name = "${name}-formatter";
+              runtimeInputs = [ pkgs.gofmt ];
+              text = ''
+                if [ "$#" -gt 0 ]; then
+                  cd "$1"
+                fi
+                gofmt -w .
+              '';
+            };
         };
 
       javascriptApp =
@@ -1540,6 +1601,51 @@
               else
                 [ ];
           };
+          formatter =
+            if type == "bun" then
+              pkgs.writeShellApplication {
+                name = "${name}-formatter";
+                runtimeInputs = [ pkgs.bun ];
+                text = ''
+                  if [ "$#" -gt 0 ]; then
+                    cd "$1"
+                  fi
+                  bunx prettier --write . || bunx biome format --write . || true
+                '';
+              }
+            else if type == "pnpm" then
+              pkgs.writeShellApplication {
+                name = "${name}-formatter";
+                runtimeInputs = [ pkgs.pnpm pkgs.nodejs ];
+                text = ''
+                  if [ "$#" -gt 0 ]; then
+                    cd "$1"
+                  fi
+                  pnpm exec prettier --write . || pnpm exec biome format --write . || true
+                '';
+              }
+            else if type == "yarn" then
+              pkgs.writeShellApplication {
+                name = "${name}-formatter";
+                runtimeInputs = [ pkgs.yarn pkgs.nodejs ];
+                text = ''
+                  if [ "$#" -gt 0 ]; then
+                    cd "$1"
+                  fi
+                  yarn exec prettier --write . || yarn exec biome format --write . || true
+                '';
+              }
+            else
+              pkgs.writeShellApplication {
+                name = "${name}-formatter";
+                runtimeInputs = [ pkgs.nodejs ];
+                text = ''
+                  if [ "$#" -gt 0 ]; then
+                    cd "$1"
+                  fi
+                  npx prettier --write . || npx biome format --write . || true
+                '';
+              };
         };
       language =
         let
