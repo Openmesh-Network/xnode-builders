@@ -327,7 +327,7 @@ a package. They are exposed as `checks.<system>.<name>-<output>` and
 
 The `getArgs` attribute is a function of the packages that returns the
 arguments of the language of the application. The result can include
-`override`, `env`, and language-specific arguments:
+`override`, `env`, `rpath`, and language-specific arguments:
 
 | Language   | Arguments                                                                        |
 | ---------- | -------------------------------------------------------------------------------- |

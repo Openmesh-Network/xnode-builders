@@ -502,6 +502,7 @@
               appArgs' = appArgs // {
                 override = appArgs.override or { };
                 env = appArgs.env or { };
+                rpath = appArgs.rpath or [ ];
               };
               output = args.appBuilder {
                 inherit system pkgs app;
@@ -511,13 +512,14 @@
 
               # Environment variables to set on the wrapped binaries.
               env = appArgs'.env or { };
+              rpath = appArgs'.rpath or [ ];
 
               wrappedPackage =
                 output.package.overrideAttrs (
                   old:
                   {
                     passthru = (old.passthru or { }) // (lib.optionalAttrs (output ? extra) output.extra) // (lib.optionalAttrs (output ? update) { inherit (output) update; });
-                    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ (lib.optionals (env != { }) [ pkgs.makeWrapper ]);
+                    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ (lib.optionals (env != { }) [ pkgs.makeWrapper ]) ++ (lib.optionals (rpath != [ ]) [ pkgs.patchelf ]);
                     postFixup = (old.postFixup or "") + (lib.optionalString (env != { }) ("\n" + ''
                       if [ -d "$out/bin" ]; then
                         for bin in "$out/bin"/*; do
@@ -536,6 +538,14 @@
                                 "--set ${lib.escapeShellArg key} ${lib.escapeShellArg (toString value)}"
                               ) env
                             )}
+                        done
+                      fi
+                    '')) + (lib.optionalString (rpath != [ ]) ("\n" + ''
+                      if [ -d "$out/bin" ]; then
+                        for bin in "$out/bin"/*; do
+                          [ -e "$bin" ] || continue
+                          [ -f "$bin" ] && [ -x "$bin" ] || continue
+                          patchelf --add-rpath ${lib.escapeShellArg (lib.concatStringsSep ":" rpath)} "$bin" || true
                         done
                       fi
                     ''));
