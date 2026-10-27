@@ -51,6 +51,7 @@ The application is described by an attribute set. The most important attributes 
 | `override`     | The overrides of the build arguments, see [Overriding build arguments](#overriding-build-arguments). |
 | `outputs`      | Additional checks and packages, see [Custom outputs](#custom-outputs).                   |
 | `getArgs`      | Language specific arguments, see [Language specific arguments](#language-specific-arguments). |
+| `update`       | Update script exposed as `packages.<system>.<name>-update`. See [Updating dependencies](#updating-dependencies). |
 
 The `implementation` selects the builder of the language of the application:
 
@@ -233,6 +234,27 @@ override =
     package.buildGoModule.vendorHash = pkgs.lib.fakeHash;
   };
 ```
+
+### Updating dependencies
+
+Every application builder exposes an update script that updates the
+dependency lock files of the application and the inputs of the flake. It is
+exposed as `packages.<system>.<name>-update`:
+
+```sh
+nix run .#<name>-update
+```
+
+The script runs the language-specific update command followed by `nix flake
+update`. For Rust it runs `cargo update`, for Go it runs `go get -u ./...` and
+`go mod tidy`, for Python it runs `uv lock --upgrade` (uv) or `poetry update`
+(poetry), and for JavaScript it runs `npm update`, `yarn upgrade`, `pnpm
+update`, or `bun update` depending on the package manager. If the language
+builder cannot update the dependencies (e.g. a Python project without a
+supported lock file), only `nix flake update` is run.
+
+The script can also be run from another directory by passing it as the first
+argument.
 
 ### Custom outputs
 

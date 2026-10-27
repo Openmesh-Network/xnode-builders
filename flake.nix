@@ -459,6 +459,38 @@
           pkgs.vscode-extensions.jnoortheen.nix-ide
         ];
 
+      # A script that updates the dependency lock file of an application and
+      # the inputs of its flake. The script runs in the current directory, or
+      # in the directory that is passed as its first argument.
+      mkUpdate =
+        pkgs:
+        {
+          name,
+          command ? "",
+          runtimeInputs ? [ ],
+        }:
+        pkgs.writeShellApplication {
+          name = "${name}-update";
+          runtimeInputs = runtimeInputs ++ [
+            pkgs.git
+            pkgs.nix
+          ];
+          text = ''
+            if [ "$#" -gt 0 ]; then
+              cd "$1"
+            fi
+
+            if [ ! -f flake.nix ]; then
+              echo "error: no flake.nix in $PWD, run the update from the root of the flake" >&2
+              exit 1
+            fi
+
+            ${lib.optionalString (command != "") command}
+
+            nix flake update
+          '';
+        };
+
       outputBuilder =
         args: rawApp:
         let
@@ -517,6 +549,7 @@
                 // lib.mapAttrs' (
                   key: value: lib.nameValuePair "${name}-${key}" value.package
                 ) customPackages
+                // (if output ? update then { "${name}-update" = output.update; } else { })
                 // (if default then { default = output.package; } else { });
 
               devShells.${system} = {
@@ -756,7 +789,14 @@
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // { inherit devShell; };
+        // {
+          inherit devShell;
+          update = mkUpdate pkgs {
+            inherit name;
+            command = "cargo update";
+            runtimeInputs = [ pkgs.cargo ];
+          };
+        };
 
       pythonApp =
         {
@@ -994,7 +1034,29 @@
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // { inherit devShell; };
+        // {
+          inherit devShell;
+          update = mkUpdate pkgs {
+            inherit name;
+            # `pyproject.nix` builds the package without a lock file, only
+            # the package managers that write one can update the
+            # dependencies of the application.
+            command =
+              if type == "uv" then
+                "uv lock --upgrade"
+              else if type == "poetry" then
+                "poetry update"
+              else
+                "";
+            runtimeInputs =
+              if type == "uv" then
+                [ pkgs.uv ]
+              else if type == "poetry" then
+                [ pkgs.poetry ]
+              else
+                [ ];
+          };
+        };
 
       goApp =
         {
@@ -1083,7 +1145,17 @@
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // { inherit devShell; };
+        // {
+          inherit devShell;
+          update = mkUpdate pkgs {
+            inherit name;
+            command = ''
+              go get -u ./...
+              go mod tidy
+            '';
+            runtimeInputs = [ pkgs.go ];
+          };
+        };
 
       javascriptApp =
         {
@@ -1383,7 +1455,34 @@
           else
             builtins.throw "Unknown implementation ${implementation}"
         )
-        // { inherit devShell; };
+        // {
+          inherit devShell;
+          update = mkUpdate pkgs {
+            inherit name;
+            command =
+              if type == "npm" then
+                "npm update"
+              else if type == "yarn" then
+                "yarn upgrade"
+              else if type == "pnpm" then
+                "pnpm update"
+              else if type == "bun" then
+                "bun update"
+              else
+                "";
+            runtimeInputs =
+              if type == "npm" then
+                [ pkgs.nodejs ]
+              else if type == "yarn" then
+                [ pkgs.yarn ]
+              else if type == "pnpm" then
+                [ pkgs.pnpm ]
+              else if type == "bun" then
+                [ pkgs.bun ]
+              else
+                [ ];
+          };
+        };
       language =
         let
           rust = outputBuilder {
