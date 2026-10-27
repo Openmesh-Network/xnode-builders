@@ -318,6 +318,7 @@
           useNetwork = if app.module or { } ? network then app.module.network else true;
           useStorage = if app.module or { } ? storage then app.module.storage else true;
           useUser = if app.module or { } ? user then app.module.user else true;
+          userService = if app.module or { } ? userService then app.module.userService else false;
 
           system = pkgs.stdenv.hostPlatform.system;
           output = builder {
@@ -333,6 +334,8 @@
               true;
           appOptions =
             if app.module or { } ? options then app.module.options (nixArgs // { inherit cfg; }) else { };
+
+          service = args: if userService then { systemd.user.services.${name} = args; } else { systemd.services.${name} = args; };
 
           isLeaf = option: option ? does;
           toNixOptions = builtins.mapAttrs (
@@ -354,8 +357,8 @@
                 [
                   (lib.mkIf (cfg != null) (
                     opt.does {
+                      inherit service;
                       value = cfg;
-                      service = args: { systemd.services.${name} = args; };
                       config = args: { services.${name} = args; };
                     }
                   ))
@@ -393,18 +396,16 @@
           config = lib.mkIf cfg.enable (
             lib.mkMerge (
               [
-                (lib.mkIf useNetwork {
-                  systemd.services.${name} = {
-                    wants = [ "network-online.target" ];
-                    after = [ "network-online.target" ];
-                  };
-                })
-                (lib.mkIf useStorage {
-                  systemd.services.${name}.serviceConfig = {
+                (lib.mkIf useNetwork (service {
+                  wants = [ "network-online.target" ];
+                  after = [ "network-online.target" ];
+                }))
+                (lib.mkIf useStorage (service {
+                  serviceConfig = {
                     WorkingDirectory = "/var/lib/${name}";
                     StateDirectory = name;
                   };
-                })
+                }))
                 (lib.mkIf useUser {
                   users.groups.${name} = { };
                   users.users.${name} = lib.mkMerge [
@@ -417,21 +418,20 @@
                       createHome = true;
                     })
                   ];
-                  systemd.services.${name}.serviceConfig = {
-                    User = name;
-                    Group = name;
+                } // (service {
+                    serviceConfig = {
+                      User = name;
+                      Group = name;
+                    };
+                  }))
+                (service {
+                  inherit description;
+                  wantedBy = [ "multi-user.target" ];
+                  serviceConfig = {
+                    ExecStart = "${lib.getExe cfg.package} ${builtins.concatStringsSep " " (builtins.map lib.escapeShellArg cfg.args)}";
+                    Restart = lib.mkDefault "on-failure";
                   };
                 })
-                {
-                  systemd.services.${name} = {
-                    inherit description;
-                    wantedBy = [ "multi-user.target" ];
-                    serviceConfig = {
-                      ExecStart = "${lib.getExe cfg.package} ${builtins.concatStringsSep " " (builtins.map lib.escapeShellArg cfg.args)}";
-                      Restart = lib.mkDefault "on-failure";
-                    };
-                  };
-                }
               ]
               ++ (toNixConfig appOptions cfg)
             )
