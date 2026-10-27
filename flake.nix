@@ -503,23 +503,14 @@
                 override = appArgs.override or { };
                 env = appArgs.env or { };
               };
-              appArgs'' =
-                appArgs'
-                // {
-                  override =
-                    if builtins.isFunction appArgs'.override then
-                      appArgs'.override { inherit pkgs; }
-                    else
-                      appArgs'.override;
-                };
               output = args.appBuilder {
                 inherit system pkgs app;
-                appArgs = appArgs'';
+                appArgs = appArgs';
               };
-              src = if app ? src then app.src else (appArgs''.src or null);
+              src = if app ? src then app.src else (appArgs'.src or null);
 
               # Environment variables to set on the wrapped binaries.
-              env = appArgs''.env or { };
+              env = appArgs'.env or { };
 
               wrappedPackage =
                 output.package.overrideAttrs (
@@ -633,11 +624,7 @@
           crateName = app.crateName or name;
           implementation = app.implementation or "crate2nix";
           src = if app ? src then app.src else (appArgs.src or null);
-          override =
-            let
-              raw = appArgs.override or { };
-            in
-            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
+          override = appArgs.override or { };
           craneLib = inputs.crane.mkLib pkgs;
 
           resolve =
@@ -895,11 +882,7 @@
           src = if app ? src then app.src else (appArgs.src or null);
           type = app.type or (if builtins.pathExists (src + "/uv.lock") then "uv" else "");
           implementation = app.implementation or (if type == "uv" then "uv2nix" else "pyproject.nix");
-          override =
-            let
-              raw = appArgs.override or { };
-            in
-            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
+          override = appArgs.override or { };
           python = appArgs.python or pkgs.python3;
 
           resolve =
@@ -1189,11 +1172,7 @@
           version = app.version;
           src = if app ? src then app.src else (appArgs.src or null);
           implementation = app.implementation or "buildGoModule";
-          override =
-            let
-              raw = appArgs.override or { };
-            in
-            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
+          override = appArgs.override or { };
 
           resolve =
             scope: defaults:
@@ -1355,11 +1334,7 @@
               else
                 ""
             );
-          override =
-            let
-              raw = appArgs.override or { };
-            in
-            if builtins.isFunction raw then raw { inherit pkgs; } else raw;
+          override = appArgs.override or { };
 
           resolve =
             scope: defaults:
