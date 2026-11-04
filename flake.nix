@@ -318,6 +318,7 @@
           useNetwork = if app.module or { } ? network then app.module.network else true;
           useStorage = if app.module or { } ? storage then app.module.storage else true;
           useUser = if app.module or { } ? user then app.module.user else true;
+          useGraphics = if app.module or { } ? graphics then app.module.graphics else false;
           userService = if app.module or { } ? userService then app.module.userService else false;
 
           system = pkgs.stdenv.hostPlatform.system;
@@ -426,7 +427,7 @@
                   }))
                 (service {
                   inherit description;
-                  wantedBy = [ "multi-user.target" ];
+                  wantedBy = if userService then (if useGraphics then [ "graphical-session.target" ] else [ "default.target" ]) else (if useGraphics then [ "graphical.target" ] else [ "multi-user.target" ]);
                   serviceConfig = {
                     ExecStart = "${lib.getExe cfg.package} ${builtins.concatStringsSep " " (builtins.map lib.escapeShellArg cfg.args)}";
                     Restart = lib.mkDefault "on-failure";
