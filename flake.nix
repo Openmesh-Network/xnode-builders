@@ -407,24 +407,23 @@
                     StateDirectory = name;
                   };
                 }))
-                (lib.mkIf useUser {
+                (lib.mkIf useUser ({
                   users.groups.${name} = { };
-                  users.users.${name} = lib.mkMerge [
+                  users.users.${name} = 
                     {
                       isSystemUser = true;
                       group = name;
-                    }
+                    } //
                     (lib.optionalAttrs useStorage {
                       home = "/var/lib/${name}";
                       createHome = true;
-                    })
-                  ];
+                    });
                 } // (service {
                     serviceConfig = {
                       User = name;
                       Group = name;
                     };
-                  }))
+                  })))
                 (service {
                   inherit description;
                   wantedBy = if userService then (if useGraphics then [ "graphical-session.target" ] else [ "default.target" ]) else (if useGraphics then [ "graphical.target" ] else [ "multi-user.target" ]);
