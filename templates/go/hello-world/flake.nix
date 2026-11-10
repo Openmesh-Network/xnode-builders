@@ -5,10 +5,14 @@
 
   outputs =
     inputs:
-    inputs.xnode-builders.language.auto {
+    inputs.xnode-builders.lib.builders.auto {
       name = "hello-world";
       version = "1.0.0";
       src = ./.;
-      override.package.buildGoModule.vendorHash = null;
+      getArgs =
+        { ... }:
+        {
+          vendorHash = null;
+        };
     };
 }

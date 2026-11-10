@@ -5,7 +5,7 @@
 
   outputs =
     inputs:
-    inputs.xnode-builders.language.auto {
+    inputs.xnode-builders.lib.builders.auto {
       src = ./.;
       framework = "astro-node";
       # Recommended to reduce final package size (requires changing astro.config.mjs)

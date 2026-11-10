@@ -14,7 +14,7 @@
 
   outputs =
     inputs:
-    inputs.xnode-builders.language.rust {
+    inputs.xnode-builders.lib.builders.rust {
       name = "xnode-manager";
       getArgs =
         { pkgs, ... }:
@@ -27,14 +27,9 @@
               hash = "sha256-svxx9B3O6b6ILq0TrtabSfSgR6vYGIq1pFNaCm+sA10=";
             }
             + "/rust-app";
-        };
-      override =
-        { pkgs, ... }:
-        {
-          package.crate2nix.build.crateOverrides = pkgs.defaultCrateOverrides // {
-            xnode-manager = attrs: {
-              buildInputs = [ pkgs.acl ];
-            };
+          override = {
+            # The xnode-manager links against libacl.
+            common.common.buildInputs = [ pkgs.acl ];
           };
         };
     };

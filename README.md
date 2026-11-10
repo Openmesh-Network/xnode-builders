@@ -29,7 +29,7 @@ Create a file called flake.nix at the root of your project repository with the f
 
   outputs =
     inputs:
-    inputs.xnode-builders.language.auto {
+    inputs.xnode-builders.lib.builders.auto {
       src = ./.;
     };
 }
@@ -48,17 +48,14 @@ The application is described by an attribute set. The most important attributes 
 | `name`         | The name of the application, read from the manifest of the language if it is not given.   |
 | `version`      | The version of the application, read from the manifest of the language if it is not given.|
 | `implementation` | The builder that is used to build the application, see below.                           |
-| `override`     | The overrides of the build arguments, see [Overriding build arguments](#overriding-build-arguments). |
 | `outputs`      | Additional checks and packages, see [Custom outputs](#custom-outputs).                   |
-| `getArgs`      | Language specific arguments, see [Language specific arguments](#language-specific-arguments). |
-| `update`       | Update script exposed as `packages.<system>.<name>.passthru.update`. See [Updating dependencies](#updating-dependencies). |
-| `formatter`    | Formatter exposed as `formatter.<system>.<name>`. |
+| `getArgs`      | Language specific arguments, including `override`, see [Language specific arguments](#language-specific-arguments). |
 
 The `implementation` selects the builder of the language of the application:
 
 | Language    | Implementations                                     |
 | ----------- | --------------------------------------------------- |
-| Rust        | `crate2nix` (default), `naersk`, `crane`, `buildRustPackage` |
+| Rust        | `crane` (default), `crate2nix`, `naersk`, `buildRustPackage` |
 | Python      | `pyproject.nix` (default), `uv2nix`                 |
 | Go          | `buildGoModule` (default)                           |
 | JavaScript  | `buildNpmPackage` (default)                         |
@@ -68,8 +65,12 @@ The `implementation` selects the builder of the language of the application:
 Every argument of every build step can be customized with
 
 ```
-override.<scope>.<implementation>.<slot>
+getArgs.override.<scope>.<implementation>.<slot>
 ```
+
+`getArgs` receives the packages of the system and returns the arguments of the
+application. Only `getArgs.override` is supported; an `override` attribute on
+the application itself is ignored.
 
 #### Scopes
 
@@ -83,8 +84,9 @@ The `scope` defines which build the override is applied to:
 | `common`   | Applies to all of the scopes above.                    |
 
 Every implementation has a `check` scope. The Rust and the Go builders run
-their native test phase, the Python builder runs `pytest` of the package (the
-`check` scope adds the `pytestCheckHook` and enables the install check) and the
+their native test phase, the Python `pyproject.nix` builder runs `pytest` of the
+package (the `check` scope adds the `pytestCheckHook` and enables the install
+check), the `uv2nix` builder builds the package in both scopes, and the
 JavaScript builder runs the `test` script of the `package.json` if the package
 has one. Additional checks can be added with
 [custom outputs](#custom-outputs).
@@ -130,8 +132,9 @@ Generic build arguments are for example `buildInputs`, `nativeBuildInputs`,
 
 #### Layers
 
-The layers are applied from the least to the most specific one, every layer
-overwrites the previous one:
+The paths below are relative to `getArgs.override`. The layers are applied
+from the least to the most specific one, every layer overwrites the previous
+one:
 
 1. the defaults of the implementation
 2. `override.common.common`
@@ -194,6 +197,8 @@ Python package of the application.
 
 #### Example
 
+Overrides are passed through `getArgs.override`:
+
 ```nix
 {
   inputs = {
@@ -202,37 +207,42 @@ Python package of the application.
 
   outputs =
     inputs:
-    inputs.xnode-builders.language.rust {
+    inputs.xnode-builders.lib.builders.rust {
       name = "my-app";
       src = ./.;
-      override = {
-        # Applies to every scope and every implementation.
-        common.common.buildInputs = [ pkgs.hello ];
+      getArgs =
+        { pkgs, ... }:
+        {
+          override = {
+            # Applies to every scope and every implementation.
+            common.common.buildInputs = [ pkgs.hello ];
 
-        # Applies to every scope of the crate2nix implementation.
-        common.crate2nix.build.runTests = true;
+            # Applies to every scope of the crate2nix implementation.
+            common.crate2nix.build.runTests = true;
 
-        # Applies to the package scope of every implementation.
-        package.common.buildInputs = prev: prev ++ [ pkgs.cowsay ];
+            # Applies to the package scope of every implementation.
+            package.common.buildInputs = prev: prev ++ [ pkgs.cowsay ];
 
-        # Applies to the build step of the package scope.
-        package.buildRustPackage.buildPackage.buildInputs = [ pkgs.coreutils ];
+            # Applies to the build step of the package scope.
+            package.buildRustPackage.buildPackage.buildInputs = [ pkgs.coreutils ];
 
-        # Applies to the tests of the crate2nix implementation.
-        check.crate2nix.build.testInputs = [ pkgs.coreutils ];
-      };
+            # Applies to the tests of the crate2nix implementation.
+            check.crate2nix.build.testInputs = [ pkgs.coreutils ];
+          };
+        };
     };
 }
 ```
 
-The `override` attribute can also be a function of the packages, which is
-useful when the overridden arguments depend on the platform:
+`getArgs.override` is an attribute set, so it can depend on the packages:
 
 ```nix
-override =
+getArgs =
   { pkgs, ... }:
   {
-    package.buildGoModule.vendorHash = pkgs.lib.fakeHash;
+    override = {
+      package.buildGoModule.vendorHash = pkgs.lib.fakeHash;
+    };
   };
 ```
 
@@ -259,8 +269,16 @@ argument.
 
 ### Formatting
 
-Every application builder exposes a formatter as `formatter.<system>.<name>`.
-Run it with `nix fmt .#<name>` or `nix fmt` if set as the default formatter.
+The default application exposes a formatter as `formatter.<system>`, so it can
+be run with `nix fmt`:
+
+```sh
+nix fmt
+```
+
+Non-default applications do not set the flake formatter, because a flake has
+only one `formatter.<system>`. Override the default application's formatter or
+expose the formatter of another application through a custom output if needed.
 
 ### Custom outputs
 
@@ -291,7 +309,7 @@ a package. They are exposed as `checks.<system>.<name>-<output>` and
 
   outputs =
     inputs:
-    inputs.xnode-builders.language.rust {
+    inputs.xnode-builders.lib.builders.rust {
       name = "my-app";
       src = ./.;
 
@@ -331,10 +349,10 @@ arguments of the language of the application. The result can include
 
 | Language   | Arguments                                                                        |
 | ---------- | -------------------------------------------------------------------------------- |
-| Rust       | `src`, `rustPlatform`                                                            |
-| Python     | `src`, `python`, `pyproject`, `extraRequirements`                                 |
-| Go         | `src`                                                                            |
-| JavaScript | `src`, `frameworkArgs`                                                            |
+| Rust       | `src`, `rustPlatform`, `override`, `env`, `rpath`                                |
+| Python     | `src`, `python`, `pyproject`, `extraRequirements`, `sourcePreference`, `override`, `env`, `rpath` |
+| Go         | `src`, `vendorHash`, `override`, `env`, `rpath`                                  |
+| JavaScript | `src`, `frameworkArgs`, `cacheDir`, `pnpmDepsHash`, `yarnDepsHash`, `override`, `env`, `rpath` |
 
 ```nix
 getArgs =
@@ -351,13 +369,16 @@ getArgs =
 
 ## Tests
 
-The tests of the builders assert the behavior of the override system and of the
-custom outputs. They only inspect the evaluated outputs, they never build the
-application:
+The tests of the builders assert the behavior of the override system, the
+custom outputs, the module and the pure merge helpers. They are all exposed
+under `checks.<system>` and run with:
 
 ```sh
 nix flake check
 ```
+
+The tests include unit tests for the pure functions and NixOS VM tests for the
+module. The VM tests are only available on Linux.
 
 The tests of the `crate2nix` implementation are only run in impure mode,
 because the `Cargo.nix` file of the application is generated with an import
