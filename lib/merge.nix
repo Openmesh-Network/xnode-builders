@@ -155,7 +155,10 @@ let
           mergeStep =
             step: previous:
             let
-              special = lib.filterAttrs (slot: target: target == step) specialSlots;
+              # `specialSlots` contains the values of the user's layer, not
+              # the step names. The step a slot belongs to is stored in
+              # `specialArgs`, so the slot has to be looked up there.
+              special = lib.filterAttrs (slot: _: specialArgs.${slot} == step) specialSlots;
             in
             mergeValues {
               prev = mergeValues {
@@ -214,7 +217,19 @@ let
     };
 
   # Recursively merge the results of every system.
-  combine = list: builtins.foldl' lib.recursiveUpdate { } list;
+  #
+  # `lib.recursiveUpdate` stops only at non-attribute values, but a
+  # derivation is an attribute set as well. Merging two derivations would
+  # produce a hybrid derivation instead of letting the later one win, so
+  # recursion also stops at derivations.
+  combine =
+    list:
+    builtins.foldl' (
+      lib.recursiveUpdateUntil (
+        _: left: right:
+        !(builtins.isAttrs left && builtins.isAttrs right) || isDerivation left || isDerivation right
+      )
+    ) { } list;
 in
 {
   inherit

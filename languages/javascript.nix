@@ -78,7 +78,52 @@ in
         );
       override = appArgs.override or { };
       cacheDirectory = framework == "nextjs" || framework == "nextjs-standalone";
-      cacheDir = appArgs.cacheDir or "/var/cache/${name}";
+      # The base directory of the runtime cache. When it is not set, the
+      # script uses `$CACHE_DIRECTORY`, which systemd sets for the
+      # `CacheDirectory = name` of the module. It resolves to
+      # `/var/cache/<name>` for system units and `%C/<name>` for user units.
+      cacheDir = appArgs.cacheDir or null;
+
+      # Next.js writes to `.next/cache`, but the store is read-only. Run the
+      # app from a writable directory below the cache directory and mirror
+      # the read-only files as symlinks. The cache directory is created by
+      # systemd for both system and user services, so the same script works
+      # for both.
+      nextStart =
+        args: { command }:
+        ''
+          export PATH="${pkgs.coreutils}/bin:$PATH"
+
+          cache_base=${if cacheDir != null then lib.escapeShellArg cacheDir else ''"$CACHE_DIRECTORY"''}
+          if [ -z "$cache_base" ]; then
+            cache_base="$XDG_CACHE_HOME"
+            if [ -z "$cache_base" ]; then
+              cache_base="$HOME/.cache"
+            fi
+            cache_base="$cache_base/${name}"
+          fi
+
+          run_dir="$cache_base/run"
+          mkdir -p "$run_dir/.next"
+
+          for entry in "${args.dir}"/* "${args.dir}"/.[!.]*; do
+            [ -e "$entry" ] || continue
+            base="$(basename "$entry")"
+            [ "$base" = ".next" ] && continue
+            ln -sfn "$entry" "$run_dir/$base"
+          done
+
+          for entry in "${args.dir}"/.next/* "${args.dir}"/.next/.[!.]*; do
+            [ -e "$entry" ] || continue
+            base="$(basename "$entry")"
+            [ "$base" = "cache" ] && continue
+            ln -sfn "$entry" "$run_dir/.next/$base"
+          done
+
+          mkdir -p "$run_dir/.next/cache"
+          cd "$run_dir"
+          ${command}
+        '';
 
       resolve =
         scope: defaults:
@@ -102,11 +147,11 @@ in
                 "node_modules"
                 "package.json"
               ];
-              execute = args: "cd ${args.dir} && ${args.npm} run start";
-              commands = ''
-                # https://github.com/vercel/next.js/discussions/58864
-                ln -s ${cacheDir} $out/share/.next/cache
-              '';
+              execute =
+                args:
+                nextStart args {
+                  command = "${args.npm} run start";
+                };
             }
           else if framework == "vite" || framework == "astro" then
             {
@@ -124,10 +169,12 @@ in
                 ".next"
                 "public"
               ];
-              execute = args: "${args.node} ${args.dir}/server.js";
+              execute =
+                args:
+                nextStart args {
+                  command = "${args.node} \"$run_dir/server.js\"";
+                };
               commands = ''
-                # https://github.com/vercel/next.js/discussions/58864
-                ln -s ${cacheDir} $out/share/.next/cache
                 mv $out/share/.next/standalone/* $out/share
               '';
             }
@@ -156,8 +203,11 @@ in
         ${builtins.concatStringsSep "\n" (
           builtins.map (toCopy: "cp --parents -r ${toCopy} $out/share") installArgs.copy or [ ]
         )}
-        cat > $out/bin/${name} << EOF
+        cat > $out/bin/${name} << 'EOF'
         #!${pkgs.lib.getExe pkgs.bash}
+        # The script body is not expanded by the install phase, so define
+        # `out` for `execute` overrides that still refer to it.
+        out=${builtins.placeholder "out"}
         ${(installArgs.execute or (args: "")) {
           node = pkgs.lib.getExe pkgs.nodejs;
           npm =

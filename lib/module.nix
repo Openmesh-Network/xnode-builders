@@ -15,7 +15,7 @@ let
   useUser = m.user or true;
   useGraphics = m.graphics or false;
   userService = m.userService or false;
-  useHarden = m.useHarden or true;
+  harden = m.harden or true;
 
   system = pkgs.stdenv.hostPlatform.system;
   output = mkApp {
@@ -139,7 +139,7 @@ in
             };
           })
         ))
-        (lib.mkIf useHarden (service {
+        (lib.mkIf harden (service {
           serviceConfig = {
             NoNewPrivileges = lib.mkDefault true;
             ProtectSystem = lib.mkDefault "strict";

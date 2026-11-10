@@ -178,6 +178,10 @@ override.package.common.buildInputs = prev: prev ++ [ pkgs.hello ];
 
 If the argument does not exist yet, the previous value is an empty list.
 
+Functions are only applied for the arguments in the list above. For every other
+argument a function value is stored as-is and is not applied to the previous
+value, so arguments that are themselves functions keep working.
+
 #### Implementation specific arguments
 
 Some arguments are handled by the implementation itself and are therefore
@@ -353,6 +357,12 @@ arguments of the language of the application. The result can include
 | Python     | `src`, `python`, `pyproject`, `extraRequirements`, `sourcePreference`, `override`, `env`, `rpath` |
 | Go         | `src`, `vendorHash`, `override`, `env`, `rpath`                                  |
 | JavaScript | `src`, `frameworkArgs`, `cacheDir`, `pnpmDepsHash`, `yarnDepsHash`, `override`, `env`, `rpath` |
+
+`cacheDir` sets the base directory of the runtime cache. It defaults to the
+cache directory of the module, which is `/var/cache/<name>` for system services
+and `$XDG_CACHE_HOME/<name>` (usually `~/.cache/<name>`) for user services. The
+Next.js builder runs from a writable directory below it and links the read-only
+application files, so the cache works for both system and user services.
 
 ```nix
 getArgs =

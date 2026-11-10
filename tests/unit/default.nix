@@ -51,6 +51,18 @@ let
       };
     };
 
+    # Functions are only applied for the list arguments in
+    # `mergeableKeys`. A function on any other argument is kept as-is.
+    testMergeValuesNonMergeableFunction = {
+      expr = builtins.isFunction (helpers.mergeValues {
+        prev = { };
+        next = {
+          preBuild = previous: previous;
+        };
+      }).preBuild;
+      expected = true;
+    };
+
     # Attribute sets are merged recursively.
     testMergeValuesNested = {
       expr = helpers.mergeValues {
@@ -104,6 +116,17 @@ let
           b = 2;
         };
       };
+    };
+
+    # `combine` must not merge derivations attribute by attribute. The later
+    # derivation replaces the earlier one instead of producing a hybrid.
+    testCombineDerivation = {
+      expr =
+        (merge.combine [
+          { packages.x.default = { drvPath = "/first"; outPath = "/first"; }; }
+          { packages.x.default = { drvPath = "/second"; outPath = "/second"; }; }
+        ]).packages.x.default.drvPath;
+      expected = "/second";
     };
 
     # A top-level `override` on the application is intentionally ignored.
@@ -186,6 +209,49 @@ let
       }).stepArgs.buildPackage.cargoBuildFlags;
       expected = [ "--locked" ];
     };
+
+    # Special arguments are stored under their slot name, but belong to the
+    # build step named in `specialArgs`. They have to be applied to that
+    # step, otherwise they are silently dropped.
+    testResolveOverridesCrate2nixFeatures = {
+      expr = (helpers.resolveOverrides {
+        override = {
+          package.crate2nix.features = [ "default" ];
+        };
+        scope = "package";
+        implementation = "crate2nix";
+        defaults = {
+          build = { };
+        };
+        specialArgs = {
+          features = "build";
+        };
+      }).stepArgs.build.features;
+      expected = [ "default" ];
+    };
+
+    testResolveOverridesUv2nixOverride = {
+      expr = (helpers.resolveOverrides {
+        override = {
+          package.uv2nix.override = {
+            foo = "bar";
+          };
+        };
+        scope = "package";
+        implementation = "uv2nix";
+        defaults = {
+          pythonSet = { };
+          venv = { };
+          application = { };
+        };
+        specialArgs = {
+          override = "pythonSet";
+        };
+      }).stepArgs.pythonSet.override;
+      expected = {
+        foo = "bar";
+      };
+    };
   };
 
   fakeAppBuilder =
@@ -246,6 +312,8 @@ let
       systemEval = evalApp fakeApp fakeAppBuilder [ ];
       userEval = evalApp fakeUserApp fakeAppBuilder [ ];
       cacheEval = evalApp fakeApp fakeCacheAppBuilder [ ];
+      userCacheEval = evalApp fakeUserApp fakeCacheAppBuilder [ ];
+      unhardenedEval = evalApp (fakeApp // { module = { harden = false; }; }) fakeAppBuilder [ ];
       argsEval = evalApp fakeApp fakeAppBuilder [
         {
           services.xnode-test.args = [
@@ -281,6 +349,12 @@ let
       testModulePrivateTmp = {
         expr = systemEval.config.systemd.services.xnode-test.serviceConfig.PrivateTmp;
         expected = true;
+      };
+
+      # Hardening can be disabled with `module.harden = false`.
+      testModuleHardeningDisabled = {
+        expr = unhardenedEval.config.systemd.services.xnode-test.serviceConfig.NoNewPrivileges or false;
+        expected = false;
       };
 
       # A system service creates its user and state directory.
@@ -325,6 +399,13 @@ let
       # The builder can request a cache directory.
       testModuleCacheDirectory = {
         expr = cacheEval.config.systemd.services.xnode-test.serviceConfig.CacheDirectory;
+        expected = "xnode-test";
+      };
+
+      # A user service uses the per-user cache directory. Systemd resolves
+      # `CacheDirectory = name` to `%C/name` for user units.
+      testModuleUserServiceCacheDirectory = {
+        expr = userCacheEval.config.systemd.user.services.xnode-test.serviceConfig.CacheDirectory;
         expected = "xnode-test";
       };
 
