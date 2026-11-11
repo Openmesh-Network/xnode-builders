@@ -1,4 +1,8 @@
-{ inputs, lib, helpers }:
+{
+  inputs,
+  lib,
+  helpers,
+}:
 let
   inherit (helpers)
     mergeValues
@@ -90,7 +94,8 @@ in
       # systemd for both system and user services, so the same script works
       # for both.
       nextStart =
-        args: { command }:
+        args:
+        { command }:
         ''
           export PATH="${pkgs.coreutils}/bin:$PATH"
 
@@ -261,21 +266,14 @@ in
                 };
                 npmConfigHook = pkgs.importNpmLock.npmConfigHook;
               }
-              // (
-                if scope == "check" && packageJson.scripts ? test then
-                  { inherit checkPhase; }
-                else
-                  { }
-              );
+              // (if scope == "check" && packageJson.scripts ? test then { inherit checkPhase; } else { });
           };
         in
-        pkgs.buildNpmPackage (
-          mergeValues {
-            prev = resolved.stepArgs.buildNpmPackage;
-            next = resolved.genericArgs;
-            extendLists = true;
-          }
-        );
+        pkgs.buildNpmPackage (mergeValues {
+          prev = resolved.stepArgs.buildNpmPackage;
+          next = resolved.genericArgs;
+          extendLists = true;
+        });
 
       pnpmBuild =
         scope:
@@ -301,21 +299,14 @@ in
                   runHook postBuild
                 '';
               }
-              // (
-                if scope == "check" && packageJson.scripts ? test then
-                  { inherit checkPhase; }
-                else
-                  { }
-              );
+              // (if scope == "check" && packageJson.scripts ? test then { inherit checkPhase; } else { });
           };
         in
-        pkgs.stdenv.mkDerivation (
-          mergeValues {
-            prev = resolved.stepArgs.buildNpmPackage;
-            next = resolved.genericArgs;
-            extendLists = true;
-          }
-        );
+        pkgs.stdenv.mkDerivation (mergeValues {
+          prev = resolved.stepArgs.buildNpmPackage;
+          next = resolved.genericArgs;
+          extendLists = true;
+        });
 
       yarnBuild =
         scope:
@@ -339,21 +330,14 @@ in
                   runHook postBuild
                 '';
               }
-              // (
-                if scope == "check" && packageJson.scripts ? test then
-                  { inherit checkPhase; }
-                else
-                  { }
-              );
+              // (if scope == "check" && packageJson.scripts ? test then { inherit checkPhase; } else { });
           };
         in
-        pkgs.stdenv.mkDerivation (
-          mergeValues {
-            prev = resolved.stepArgs.buildNpmPackage;
-            next = resolved.genericArgs;
-            extendLists = true;
-          }
-        );
+        pkgs.stdenv.mkDerivation (mergeValues {
+          prev = resolved.stepArgs.buildNpmPackage;
+          next = resolved.genericArgs;
+          extendLists = true;
+        });
 
       buildFor =
         scope:
@@ -381,18 +365,22 @@ in
             shell = {
               buildInputs =
                 (defaultDevShellBuildInputs { inherit pkgs; })
-                ++ [ pkgs.python3 ]
                 ++ (
                   if type == "npm" then
-                    [ pkgs.nodejs ]
+                    [
+                      pkgs.nodejs
+                      pkgs.nodejs.python
+                    ]
                   else if type == "yarn" then
                     [
                       pkgs.nodejs
+                      pkgs.nodejs.python
                       pkgs.yarn
                     ]
                   else if type == "pnpm" then
                     [
                       pkgs.nodejs
+                      pkgs.nodejs.python
                       pkgs.pnpm
                     ]
                   else if type == "bun" then
@@ -403,13 +391,11 @@ in
             };
           };
         in
-        pkgs.mkShell (
-          mergeValues {
-            prev = resolved.stepArgs.shell;
-            next = resolved.genericArgs;
-            extendLists = true;
-          }
-        );
+        pkgs.mkShell (mergeValues {
+          prev = resolved.stepArgs.shell;
+          next = resolved.genericArgs;
+          extendLists = true;
+        });
     in
     (
       if implementation == "buildNpmPackage" then
@@ -473,7 +459,10 @@ in
         else if type == "pnpm" then
           pkgs.writeShellApplication {
             name = "${name}-formatter";
-            runtimeInputs = [ pkgs.pnpm pkgs.nodejs ];
+            runtimeInputs = [
+              pkgs.pnpm
+              pkgs.nodejs
+            ];
             text = ''
               if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
@@ -484,7 +473,10 @@ in
         else if type == "yarn" then
           pkgs.writeShellApplication {
             name = "${name}-formatter";
-            runtimeInputs = [ pkgs.yarn pkgs.nodejs ];
+            runtimeInputs = [
+              pkgs.yarn
+              pkgs.nodejs
+            ];
             text = ''
               if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
