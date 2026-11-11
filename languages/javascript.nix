@@ -381,7 +381,7 @@ in
             shell = {
               buildInputs =
                 (defaultDevShellBuildInputs { inherit pkgs; })
-                ++ [ pkgs.python ]
+                ++ [ pkgs.python3 ]
                 ++ (
                   if type == "npm" then
                     [ pkgs.nodejs ]
@@ -464,7 +464,7 @@ in
             name = "${name}-formatter";
             runtimeInputs = [ pkgs.bun ];
             text = ''
-              if [ "$#" -gt 0 ]; then
+              if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
               fi
               bunx prettier --write . || bunx biome format --write . || true
@@ -475,7 +475,7 @@ in
             name = "${name}-formatter";
             runtimeInputs = [ pkgs.pnpm pkgs.nodejs ];
             text = ''
-              if [ "$#" -gt 0 ]; then
+              if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
               fi
               pnpm exec prettier --write . || pnpm exec biome format --write . || true
@@ -486,7 +486,7 @@ in
             name = "${name}-formatter";
             runtimeInputs = [ pkgs.yarn pkgs.nodejs ];
             text = ''
-              if [ "$#" -gt 0 ]; then
+              if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
               fi
               yarn exec prettier --write . || yarn exec biome format --write . || true
@@ -497,7 +497,7 @@ in
             name = "${name}-formatter";
             runtimeInputs = [ pkgs.nodejs ];
             text = ''
-              if [ "$#" -gt 0 ]; then
+              if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
               fi
               npx prettier --write . || npx biome format --write . || true

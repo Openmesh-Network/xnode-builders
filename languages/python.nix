@@ -19,7 +19,15 @@ in
       name = app.name;
       version = app.version;
       src = if app ? src then app.src else (appArgs.src or null);
-      type = app.type or (if builtins.pathExists (src + "/uv.lock") then "uv" else "");
+      type =
+        app.type or (
+          if builtins.pathExists (src + "/uv.lock") then
+            "uv"
+          else if builtins.pathExists (src + "/poetry.lock") then
+            "poetry"
+          else
+            ""
+        );
       implementation = app.implementation or (if type == "uv" then "uv2nix" else "pyproject.nix");
       override = appArgs.override or { };
       python = appArgs.python or pkgs.python3;
@@ -66,15 +74,20 @@ in
     (
       if implementation == "pyproject.nix" then
         let
+          pyproject = pkgs.lib.importTOML (src + (appArgs.pyproject or "/pyproject.toml"));
+          # Poetry projects can use either the legacy `[tool.poetry]` table or
+          # PEP-621 `[project]` metadata. Prefer the PEP-621 metadata when it is
+          # present, because Poetry 2 projects can contain both.
           loader =
             if type == "uv" then
               "loadUVPyproject"
-            else if type == "poetry" then
+            else if pyproject ? project then
+              "loadPyproject"
+            else if type == "poetry" || pyproject ? tool.poetry then
               "loadPoetryPyproject"
             else
               "loadPyproject";
           extraRequirements = appArgs.extraRequirements or [ ];
-          pyproject = pkgs.lib.importTOML (src + (appArgs.pyproject or "/pyproject.toml"));
           baseProject = inputs.pyproject-nix.lib.project.${loader} {
             inherit pyproject;
             projectRoot = src;
@@ -170,10 +183,9 @@ in
             };
             application = { };
           };
-          # Build the Python package of a scope. The `check` scope of
-          # `uv2nix` builds the package of the application with the same
-          # steps as the `package` scope, the generic arguments are
-          # therefore shared by both scopes.
+          # Build the Python package set of a scope. The `check` scope only
+          # builds a virtual environment for the tests, it does not build the
+          # package a second time.
           mkPythonSet =
             resolved:
             (pkgs.callPackage inputs.pyproject-nix.build.packages {
@@ -215,10 +227,37 @@ in
               result = application.overrideAttrs (old: resolved.stepArgs.application);
             };
           pythonPackage = mkPackage resolvedPackage;
-          pythonPackageCheck = mkPackage resolvedCheck;
+
+          # Run the tests of the application instead of building the package a
+          # second time. The check environment contains the project and all of
+          # its dependency groups. `pytest` is taken from the selected
+          # interpreter, the site-packages of the environment are added to
+          # `PYTHONPATH` so that the tests can import the project.
+          checkVenv =
+            (
+              (mkPythonSet resolvedCheck).mkVirtualEnv "${name}-${version}-check-venv" workspace.deps.all
+            ).overrideAttrs (old: resolvedCheck.stepArgs.venv);
+          check =
+            pkgs.runCommand "${name}-check" {
+              nativeBuildInputs = [
+                checkVenv
+                python.pkgs.pytest
+              ];
+              PYTHONPATH = "${checkVenv}/${python.sitePackages}";
+            } ''
+              cp -r ${src} source
+              chmod -R u+w source
+              cd source
+              if [ -d tests ]; then
+                # Exit code 5 means that no tests were collected.
+                pytest || test $? -eq 5
+              fi
+              touch $out
+            '';
         in
         {
-          check = pythonPackageCheck.result;
+          inherit check;
+
           package = pythonPackage.result;
 
           extra = {
@@ -262,7 +301,7 @@ in
             name = "${name}-formatter";
             runtimeInputs = [ pkgs.ruff ];
             text = ''
-              if [ "$#" -gt 0 ]; then
+              if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
               fi
               ruff format .
@@ -274,7 +313,7 @@ in
             name = "${name}-formatter";
             runtimeInputs = [ pkgs.black pkgs.isort ];
             text = ''
-              if [ "$#" -gt 0 ]; then
+              if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
               fi
               black .
@@ -286,7 +325,7 @@ in
             name = "${name}-formatter";
             runtimeInputs = [ pkgs.black ];
             text = ''
-              if [ "$#" -gt 0 ]; then
+              if [ "$#" -gt 0 ] && [ -d "$1" ]; then
                 cd "$1"
               fi
               black .

@@ -1,11 +1,10 @@
-{ lib, mkApp }:
+{ lib }:
 {
   app,
   nixArgs,
-  appBuilder,
+  output,
 }:
 let
-  pkgs = nixArgs.pkgs;
   inherit (nixArgs) lib;
   name = app.name;
   m = app.module or { };
@@ -16,16 +15,6 @@ let
   useGraphics = m.graphics or false;
   userService = m.userService or false;
   harden = m.harden or true;
-
-  system = pkgs.stdenv.hostPlatform.system;
-  output = mkApp {
-    inherit
-      appBuilder
-      system
-      pkgs
-      app
-      ;
-  };
 
   cfg = nixArgs.config.services.${name};
   defaultEnable =

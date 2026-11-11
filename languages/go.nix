@@ -21,6 +21,18 @@ in
       src = if app ? src then app.src else (appArgs.src or null);
       implementation = app.implementation or "buildGoModule";
       override = appArgs.override or { };
+
+      # `buildGoModule` names the binary after the main package, which is the
+      # last component of the module path. Do not assume that it matches the
+      # application name.
+      goMod = if src != null && builtins.pathExists (src + "/go.mod") then builtins.readFile (src + "/go.mod") else "";
+      modulePath =
+        let
+          moduleLines = builtins.filter (line: lib.hasPrefix "module " line) (lib.splitString "\n" goMod);
+        in
+        if moduleLines == [ ] then "" else lib.removePrefix "module " (lib.trim (builtins.head moduleLines));
+      mainProgram = appArgs.mainProgram or (if modulePath == "" then name else builtins.baseNameOf modulePath);
+
       vendorHash =
         appArgs.vendorHash or (
           if src != null && builtins.pathExists (src + "/vendor") then
@@ -50,7 +62,7 @@ in
               inherit version src vendorHash;
               doCheck = scope == "check";
               meta = {
-                mainProgram = name;
+                inherit mainProgram;
               };
             };
           };
@@ -88,7 +100,11 @@ in
 
           package = goBuild "package";
           extra = {
-            inherit appArgs vendorHash;
+            inherit
+              appArgs
+              vendorHash
+              mainProgram
+              ;
           };
         }
       else
@@ -108,7 +124,7 @@ in
         name = "${name}-formatter";
         runtimeInputs = [ pkgs.go ];
         text = ''
-          if [ "$#" -gt 0 ]; then
+          if [ "$#" -gt 0 ] && [ -d "$1" ]; then
             cd "$1"
           fi
           gofmt -w .

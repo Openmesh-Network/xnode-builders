@@ -83,12 +83,14 @@ The `scope` defines which build the override is applied to:
 | `devshell` | The development shell of the application.              |
 | `common`   | Applies to all of the scopes above.                    |
 
-Every implementation has a `check` scope. The Rust and the Go builders run
-their native test phase, the Python `pyproject.nix` builder runs `pytest` of the
-package (the `check` scope adds the `pytestCheckHook` and enables the install
-check), the `uv2nix` builder builds the package in both scopes, and the
-JavaScript builder runs the `test` script of the `package.json` if the package
-has one. Additional checks can be added with
+Every implementation has a `check` scope. The Rust `crane` builder runs the
+tests with `cargo nextest` and exposes clippy and formatting as additional
+checks, the other Rust builders and the Go builder run their native test phase,
+the Python `pyproject.nix` builder runs `pytest` of the package (the `check`
+scope adds the `pytestCheckHook` and enables the install check), the `uv2nix`
+builder runs `pytest` from the source in an environment with the dependency
+groups of the project, and the JavaScript builder runs the `test` script of the
+`package.json` if the package has one. Additional checks can be added with
 [custom outputs](#custom-outputs).
 
 #### Implementations
@@ -118,7 +120,7 @@ The build steps depend on the implementation:
 | --------------- | --------------------------------------- |
 | `crate2nix`     | `build`                                 |
 | `naersk`        | `buildPackage`                          |
-| `crane`         | `buildPackage`, `buildDepsOnly`         |
+| `crane`         | `buildPackage`, `buildDepsOnly`, `cargoClippy`, `cargoFmt`, `cargoNextest` |
 | `buildRustPackage` | `buildPackage`                       |
 | `pyproject.nix` | `buildPythonPackage`                    |
 | `uv2nix`        | `pythonSet`, `venv`, `application`      |
@@ -355,8 +357,12 @@ arguments of the language of the application. The result can include
 | ---------- | -------------------------------------------------------------------------------- |
 | Rust       | `src`, `rustPlatform`, `override`, `env`, `rpath`                                |
 | Python     | `src`, `python`, `pyproject`, `extraRequirements`, `sourcePreference`, `override`, `env`, `rpath` |
-| Go         | `src`, `vendorHash`, `override`, `env`, `rpath`                                  |
+| Go         | `src`, `vendorHash`, `mainProgram`, `override`, `env`, `rpath`                   |
 | JavaScript | `src`, `frameworkArgs`, `cacheDir`, `pnpmDepsHash`, `yarnDepsHash`, `override`, `env`, `rpath` |
+
+For Go, `mainProgram` is the name of the binary that the module runs. It
+defaults to the last component of the `module` path in `go.mod`, because that is
+the name `buildGoModule` gives the binary.
 
 `cacheDir` sets the base directory of the runtime cache. It defaults to the
 cache directory of the module, which is `/var/cache/<name>` for system services

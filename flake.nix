@@ -46,7 +46,38 @@
       mkApp = import ./lib/mk-app.nix {
         inherit lib helpers wrapPackage;
       };
-      defaultModule = import ./lib/module.nix { inherit lib mkApp; };
+      defaultModule = import ./lib/module.nix { inherit lib; };
+
+      # The entry point of `nixosModules.<name>`. The package of the module is
+      # built with the nixpkgs of this flake, not with the nixpkgs of the
+      # consumer, so the module and the flake output always use the same
+      # package.
+      mkModule =
+        { app, appBuilder }:
+        # `utils` is a `_module.args` value. Module arguments from
+        # `_module.args` are only added to the argument set of a module
+        # function for the names it declares, so `utils` has to be listed
+        # explicitly to be part of `nixArgs`.
+        { pkgs, utils, ... }@nixArgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          flakePkgs = import inputs.nixpkgs ({ inherit system; } // (app.pkgsImport or { }));
+          output = mkApp {
+            inherit
+              appBuilder
+              app
+              system
+              ;
+            pkgs = flakePkgs;
+          };
+        in
+        defaultModule {
+          inherit
+            app
+            nixArgs
+            output
+            ;
+        };
 
       languages = {
         rust = import ./languages/rust.nix { inherit inputs lib helpers; };
@@ -141,7 +172,10 @@
             in
             {
               checks.${system} =
-                (if output ? check then { ${name} = output.check; } else { })
+                (if output ? check && output.check != null then { ${name} = output.check; } else { })
+                // lib.mapAttrs' (
+                  key: value: lib.nameValuePair "${name}-${key}" value
+                ) (output.checks or { })
                 // lib.mapAttrs' (key: value: lib.nameValuePair "${name}-${key}" value.check) customChecks;
 
               packages.${system} =
@@ -164,11 +198,7 @@
           (
             let
               enableModule = if app.module or { } ? enable then app.module.enable else true;
-              module =
-                { pkgs, ... }@nixArgs:
-                defaultModule {
-                  inherit app appBuilder nixArgs;
-                };
+              module = mkModule { inherit app appBuilder; };
             in
             if enableModule then
               {
@@ -215,7 +245,6 @@
           ;
         inherit
           builders
-          helpers
           wrapPackage
           mkApp
           defaultModule
@@ -424,6 +453,12 @@
             implementation = "buildRustPackage";
           };
 
+          # The default Rust implementation. It exposes the clippy, fmt and
+          # nextest checks in addition to the package.
+          crane = builders.rust {
+            src = ./tests/rust;
+          };
+
           formatter = multiSystem.formatter.${system};
 
           unit = import ./tests/unit/default.nix {
@@ -432,7 +467,7 @@
               helpers
               merge
               mkApp
-              defaultModule
+              mkModule
               inputs
               pkgs
               system
@@ -445,7 +480,7 @@
                 inherit
                   pkgs
                   lib
-                  defaultModule
+                  mkModule
                   ;
               }
             else
@@ -531,11 +566,18 @@
               (unwrapped javascript.checks.${system}.test-app).drvAttrs ? checkPhase
               && !((unwrapped javascript.packages.${system}.test-app).drvAttrs ? checkPhase);
 
-            # All systems are present, not only the last one.
-            "multi-system" = builtins.attrNames multiSystem.packages == systems;
+            # All systems are present, not only the last one. `attrNames` is
+            # sorted, so compare against the sorted system list.
+            "multi-system" = builtins.attrNames multiSystem.packages == lib.sort builtins.lessThan systems;
 
             # `formatter.<system>` is a single derivation for `nix fmt`.
             "formatter-is-derivation" = merge.isDerivation formatter;
+
+            # The default Rust implementation exposes the tests, clippy and
+            # formatting as checks.
+            "crane-check" = merge.isDerivation crane.checks.${system}.test-app;
+            "crane-clippy" = merge.isDerivation crane.checks.${system}.test-app-clippy;
+            "crane-fmt" = merge.isDerivation crane.checks.${system}.test-app-fmt;
           }
           // (
             if crate2nix == null then
@@ -563,7 +605,10 @@
           )
         )
         // { inherit unit; }
-        // lib.optionalAttrs (vm != null) { inherit vm; }
+        // lib.optionalAttrs (vm != null) vm
+        # Actually run the checks of the default Rust implementation instead
+        # of only asserting that they exist.
+        // crane.checks.${system}
       );
     };
 }

@@ -100,14 +100,15 @@ in
           extendLists = true;
         };
 
-      craneBuild =
-        scope:
+      # Build the dependencies once from arguments that do not depend on the
+      # scope. Otherwise the package and the check scope build their own
+      # cargo artifacts, even though they use the same dependencies.
+      craneArtifacts =
         let
-          resolved = resolve scope {
+          resolved = resolve "package" {
             buildPackage = {
               src = craneLib.cleanCargoSource src;
               strictDeps = true;
-              doCheck = scope == "check";
             };
             buildDepsOnly = { };
           };
@@ -120,11 +121,49 @@ in
             prev = packageArgs;
             next = resolved.stepArgs.buildDepsOnly;
           };
-          cargoArtifacts = packageArgs.cargoArtifacts or (craneLib.buildDepsOnly depsArgs);
+        in
+        packageArgs.cargoArtifacts or (craneLib.buildDepsOnly depsArgs);
+
+      craneBuild =
+        scope:
+        let
+          resolved = resolve scope {
+            buildPackage = {
+              src = craneLib.cleanCargoSource src;
+              strictDeps = true;
+            };
+            buildDepsOnly = { };
+            cargoClippy = { };
+            cargoFmt = { };
+            cargoNextest = { };
+          };
+          packageArgs = mergeValues {
+            prev = resolved.stepArgs.buildPackage;
+            next = resolved.genericArgs;
+            extendLists = true;
+          };
+          mergeStep =
+            step:
+            mergeValues {
+              prev = packageArgs;
+              next = resolved.stepArgs.${step};
+              extendLists = true;
+            };
+          withArtifacts = attrs: attrs // { cargoArtifacts = attrs.cargoArtifacts or craneArtifacts; };
+          fmtArgs = mergeValues {
+            prev = {
+              src = craneLib.cleanCargoSource src;
+            };
+            next = resolved.stepArgs.cargoFmt;
+            extendLists = true;
+          };
         in
         {
-          args = packageArgs // { inherit cargoArtifacts; };
-          inherit cargoArtifacts;
+          args = withArtifacts packageArgs;
+          clippy = craneLib.cargoClippy (withArtifacts (mergeStep "cargoClippy"));
+          fmt = craneLib.cargoFmt fmtArgs;
+          nextest = craneLib.cargoNextest (withArtifacts (mergeStep "cargoNextest"));
+          cargoArtifacts = (withArtifacts packageArgs).cargoArtifacts;
         };
 
       buildRustPackageBuild =
@@ -199,12 +238,22 @@ in
           };
         }
       else if implementation == "crane" then
+        let
+          packageBuild = craneBuild "package";
+          checkBuild = craneBuild "check";
+        in
         {
-          check = craneLib.buildPackage (craneBuild "check").args;
-          package = craneLib.buildPackage (craneBuild "package").args;
+          # Run the tests with nextest instead of rebuilding the package with
+          # `doCheck`, and expose clippy and formatting as separate checks.
+          check = checkBuild.nextest;
+          package = craneLib.buildPackage packageBuild.args;
+          checks = {
+            clippy = checkBuild.clippy;
+            fmt = checkBuild.fmt;
+          };
           extra = {
             inherit appArgs craneLib;
-            cargoArtifacts = (craneBuild "package").cargoArtifacts;
+            cargoArtifacts = packageBuild.cargoArtifacts;
           };
         }
       else if implementation == "buildRustPackage" then
@@ -230,7 +279,7 @@ in
         name = "${name}-formatter";
         runtimeInputs = [ pkgs.rustfmt pkgs.cargo ];
         text = ''
-          if [ "$#" -gt 0 ]; then
+          if [ "$#" -gt 0 ] && [ -d "$1" ]; then
             cd "$1"
           fi
           cargo fmt

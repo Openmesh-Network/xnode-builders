@@ -79,6 +79,9 @@ let
     crane = [
       "buildPackage"
       "buildDepsOnly"
+      "cargoClippy"
+      "cargoFmt"
+      "cargoNextest"
     ];
     buildRustPackage = [ "buildPackage" ];
     "pyproject.nix" = [ "buildPythonPackage" ];

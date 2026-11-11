@@ -1,4 +1,4 @@
-{ lib, helpers, merge, mkApp, defaultModule, inputs, pkgs, system }:
+{ lib, helpers, merge, mkApp, mkModule, inputs, pkgs, system }:
 let
   pureTests = {
     # `mergeValues` applies a function of an absent list argument to an
@@ -119,14 +119,26 @@ let
     };
 
     # `combine` must not merge derivations attribute by attribute. The later
-    # derivation replaces the earlier one instead of producing a hybrid.
+    # derivation replaces the earlier one instead of producing a hybrid, so
+    # attributes that only exist on the first derivation must not survive.
     testCombineDerivation = {
       expr =
         (merge.combine [
-          { packages.x.default = { drvPath = "/first"; outPath = "/first"; }; }
-          { packages.x.default = { drvPath = "/second"; outPath = "/second"; }; }
-        ]).packages.x.default.drvPath;
-      expected = "/second";
+          {
+            packages.x.default = {
+              drvPath = "/first";
+              outPath = "/first";
+              onlyFirst = true;
+            };
+          }
+          {
+            packages.x.default = {
+              drvPath = "/second";
+              outPath = "/second";
+            };
+          }
+        ]).packages.x.default ? onlyFirst;
+      expected = false;
     };
 
     # A top-level `override` on the application is intentionally ignored.
@@ -290,12 +302,9 @@ let
     lib.nixosSystem {
       inherit system;
       modules = [
-        ({ config, utils, ... }: defaultModule {
-          inherit app appBuilder;
-          nixArgs = {
-            inherit pkgs lib config utils;
-          };
-        })
+        # Use the same entry point as `nixosModules.<name>` instead of calling
+        # `defaultModule` directly.
+        (mkModule { inherit app appBuilder; })
         { services.xnode-test.enable = true; }
       ]
       ++ extraModules;
@@ -402,8 +411,9 @@ let
         expected = "xnode-test";
       };
 
-      # A user service uses the per-user cache directory. Systemd resolves
-      # `CacheDirectory = name` to `%C/name` for user units.
+      # A user service also requests a cache directory. This only asserts the
+      # unit setting; the VM test checks that systemd resolves it to the
+      # per-user cache directory.
       testModuleUserServiceCacheDirectory = {
         expr = userCacheEval.config.systemd.user.services.xnode-test.serviceConfig.CacheDirectory;
         expected = "xnode-test";
