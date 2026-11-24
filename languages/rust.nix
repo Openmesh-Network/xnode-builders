@@ -110,7 +110,12 @@ in
               src = craneLib.cleanCargoSource src;
               strictDeps = true;
             };
-            buildDepsOnly = { };
+            # Check all targets to cache dev-dependencies without enabling
+            # `doCheck` outside the check scope.
+            buildDepsOnly = {
+              doCheck = false;
+              cargoCheckExtraArgs = "--all-targets";
+            };
           };
           packageArgs = mergeValues {
             prev = resolved.stepArgs.buildPackage;
@@ -131,10 +136,15 @@ in
             buildPackage = {
               src = craneLib.cleanCargoSource src;
               strictDeps = true;
+              # The package must not run the tests. They are run by the
+              # `cargoNextest` check in the `check` scope.
+              doCheck = scope == "check";
             };
             buildDepsOnly = { };
-            cargoClippy = { };
-            cargoFmt = { };
+            # The lint and format checks do not run tests. Set `doCheck`
+            # explicitly so they do not inherit it from the package args.
+            cargoClippy = { doCheck = false; };
+            cargoFmt = { doCheck = false; };
             cargoNextest = { };
           };
           packageArgs = mergeValues {

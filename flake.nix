@@ -446,6 +446,12 @@
             src = ./tests/javascript;
           };
 
+          # The Go app. The check scope runs the native test phase, the
+          # package scope does not.
+          go = builders.go {
+            src = ./tests/go;
+          };
+
           # The packages of every system have to be present, not only the
           # packages of the last system.
           multiSystem = builders.rust {
@@ -578,6 +584,24 @@
             "crane-check" = merge.isDerivation crane.checks.${system}.test-app;
             "crane-clippy" = merge.isDerivation crane.checks.${system}.test-app-clippy;
             "crane-fmt" = merge.isDerivation crane.checks.${system}.test-app-fmt;
+
+            # Only the nextest check runs tests. The package and the lint and
+            # format checks must not run them.
+            "crane-check-argument" =
+              (unwrapped crane.packages.${system}.test-app).drvAttrs.doCheck == false
+              && (unwrapped crane.checks.${system}.test-app).drvAttrs.doCheck == true
+              && (unwrapped crane.checks.${system}.test-app-clippy).drvAttrs.doCheck == false
+              && (unwrapped crane.checks.${system}.test-app-fmt).drvAttrs.doCheck == false
+              # The dependency cache checks all targets to cache dev
+              # dependencies without enabling `doCheck`.
+              && crane.packages.${system}.test-app.passthru.cargoArtifacts.drvAttrs.doCheck == false
+              && lib.hasInfix "--all-targets" crane.packages.${system}.test-app.passthru.cargoArtifacts.drvAttrs.buildPhase;
+
+            # The Go check scope runs the native test phase, the package scope
+            # does not.
+            "go-check-argument" =
+              (unwrapped go.checks.${system}.go-app).drvAttrs.doCheck == true
+              && (unwrapped go.packages.${system}.go-app).drvAttrs.doCheck == false;
           }
           // (
             if crate2nix == null then
